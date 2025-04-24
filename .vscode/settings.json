@@ -1,0 +1,11 @@
+{
+    "C_Cpp.intelliSenseEngine": "default",
+    "idf.espIdfPath": "/home/nazareno/esp/esp-idf",
+    "idf.pythonInstallPath": "/home/nazareno/.espressif/python_env/idf5.3_py3.12_env/bin/python",
+    "idf.openOcdConfigs": [
+        "interface/ftdi/esp32_devkitj_v1.cfg",
+        "target/esp32s3.cfg"
+    ],
+    "idf.port": "/dev/ttyACM0",
+    "idf.toolsPath": "/home/nazareno/.espressif"
+}
