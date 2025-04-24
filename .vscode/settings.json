@@ -7,5 +7,8 @@
         "target/esp32s3.cfg"
     ],
     "idf.port": "/dev/ttyACM0",
-    "idf.toolsPath": "/home/nazareno/.espressif"
+    "idf.toolsPath": "/home/nazareno/.espressif",
+    "files.associations": {
+        "secrets.h": "c"
+    }
 }
