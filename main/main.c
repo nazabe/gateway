@@ -1,6 +1,22 @@
-/*
-    @brief Entry point for the ESP32 application.
-*/
+// Standard C libraries
+#include <stdio.h>
+#include <string.h>
+#include <time.h>
+#include <sys/time.h>
+
+// FreeRTOS
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+
+// ESP-IDF logging and system
+#include "esp_log.h"
+#include "esp_system.h"
+#include "esp_mac.h"
+#include "esp_wifi.h"
+#include "esp_event.h"
+#include "esp_sntp.h"
+#include "esp_heap_caps.h"
+#include "esp_crt_bundle.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -16,13 +32,17 @@
 #include "esp_mac.h"
 #include "wifi_manager.h"
 
+#include "esp_http_client.h"
+
 #include "secrets.h"
 
-char *DEVICE_UUID = "DEFAULT";
-char *DEVICE_MAC = "TOKEN_NOT_RECIVED";
-char *DEVICE_TOKEN = "TOKEN_NOT_RECIVED";
+// TODO: Use docker to fix python & idf problems
 
-/* @brief tag used for ESP serial console messages */
+char *DEVICE_UUID = "DEFAULT";
+char *DEVICE_MAC = "TOKEN_NOT_RECIVED"; // TODO: Put here real MAC
+char *DEVICE_TOKEN = "TOKEN_NOT_RECIVED"; // TODO: TOKEN has not to be hardcoded
+char *DEVICE_TYPE = "GATEWAY";
+
 static const char TAG[] = "main";
 
 bool is_wifi_connected()
@@ -35,14 +55,20 @@ bool is_wifi_connected()
     return false;
 }
 
-int get_device_uuid(uuid, token) {
+int get_device_uuid(DEVICE_MAC, DEVICE_TOKEN, DEVICE_TYPE) {
+
+    char wifi_bssid[32] = {0}; // TODO: This is the best way of obtain this variable?
+
+    // Use Wifi-Manager to obtain SSID & Password
+    wifi_config_t wifi_config;
+    esp_err_t err = esp_wifi_get_config(WIFI_IF_STA, &wifi_config);
 
     char request_data[256];
     snprintf(request_data, sizeof(request_data), 
-             "{\"uuid\":\"%s\",\"device_type\":\"%s\",\"ssid\":\"%s\",\"password\":\"%s\",\"token\":\"%s\"}", 
-             uuid, device_type, wifi_ssid, wifi_password, token); // TODO: Add 
+             "{\"device_mac\":\"%s\",\"device_type\":\"%s\",\"device_token\":\"%s\",\"wifi_ssid\":\"%s\",\"wifi_password\":\"%s\",\"wifi_password\":\"%s\"}", 
+             DEVICE_MAC, DEVICE_TYPE, DEVICE_TOKEN, wifi_config.sta.ssid, wifi_config.sta.password, wifi_bssid); // TODO: Add BSSID
 
-    esp_http_client_config_t config = {
+    esp_http_client_config_t config = { // esp_http_client_config_t is undefined, #include "esp_http_client.h" fix it
         .url = API_URL,
         .method = HTTP_METHOD_POST,
         .crt_bundle_attach = esp_crt_bundle_attach,
@@ -89,7 +115,7 @@ void app_main(void)
 
 	if (strcmp(DEVICE_UUID, "DEFAULT"))
 	{
-		get_device_uuid(DEVICE_MAC, DEVICE_TOKEN);
+		get_device_uuid(DEVICE_MAC, DEVICE_TOKEN, DEVICE_TYPE);
 	}
 
 }
