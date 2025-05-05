@@ -205,7 +205,7 @@ static bool extract_string_array(cJSON *parent, const char *key, char dest_array
 }
 
 
-void handle_json_response(const char *json_str) {
+void process_json_response(const char *json_str) {
     if (json_str == NULL) {
         ESP_LOGE(TAG, "A valid JSON was not received (NULL)");
         return;
@@ -298,7 +298,7 @@ esp_err_t http_event_handler(esp_http_client_event_t *evt) {
         case HTTP_EVENT_ON_FINISH:
             if (response_buffer) {
                 json_str = response_buffer;
-                handle_json_response(json_str);
+                process_json_response(json_str);
                 free(response_buffer);
                 response_buffer = NULL;
                 response_len = 0;
