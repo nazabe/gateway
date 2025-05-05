@@ -32,6 +32,9 @@
 
 // TODO: Use docker to fix python & idf problems
 
+#define MAX_FILTER_LIST_SIZE 10
+#define MAX_MAC_LEN 18
+
 #define BUFFER_SIZE 500
 #define CLEAN_INTERVAL_MS 5000
 
@@ -89,7 +92,7 @@ bool is_wifi_connected()
     return false;
 }
 
-int get_device_uuid(char *DEVICE_MAC, char *DEVICE_TYPE, char *DEVICE_TOKEN) {
+int get_device_uuid(char *DEVICE_MAC, char *DEVICE_TYPE, char *DEVICE_TOKEN) { // TODO: It need have; MAC, Location (AP list), AP, password 
 
     char wifi_bssid[32] = {0}; // TODO: This is the best way of obtain this variable?
 
@@ -103,7 +106,7 @@ int get_device_uuid(char *DEVICE_MAC, char *DEVICE_TYPE, char *DEVICE_TOKEN) {
              DEVICE_MAC, DEVICE_TYPE, DEVICE_TOKEN, wifi_config.sta.ssid, wifi_config.sta.password, wifi_bssid); // TODO: Add BSSID
 
     esp_http_client_config_t config = { // esp_http_client_config_t is undefined, #include "esp_http_client.h" fix it
-        .url = API_URL,
+        .url = UUID_API_URL,
         .method = HTTP_METHOD_POST,
         .crt_bundle_attach = esp_crt_bundle_attach,
     };
@@ -134,210 +137,134 @@ int get_device_uuid(char *DEVICE_MAC, char *DEVICE_TYPE, char *DEVICE_TOKEN) {
     }
 }
 
-void handle_json_response(const char *json_str) {
+static cJSON* get_nested_object(cJSON *parent, const char *key, const char *tag) {
+    cJSON *item = cJSON_GetObjectItem(parent, key);
+    if (item == NULL || !cJSON_IsObject(item)) {
+        ESP_LOGE(tag, "Object '%s' not found or invalid.", key);
+        return NULL;
+    }
+    return item;
+}
 
-    if (json_str == NULL) {
-        ESP_LOGE(TAG, "No se recibió un JSON válido");
-        return;
+static bool extract_string(cJSON *parent, const char *key, char *dest, size_t dest_size, const char *tag, const char *log_prefix) {
+    cJSON *item = cJSON_GetObjectItem(parent, key);
+    if (item != NULL && cJSON_IsString(item) && item->valuestring != NULL) {
+        strncpy(dest, item->valuestring, dest_size - 1);
+        dest[dest_size - 1] = '\0';
+        if (log_prefix) {
+            ESP_LOGI(tag, "%s: %s", log_prefix, dest);
+        }
+        return true;
+    } else {
+       ESP_LOGW(tag, "String '%s' not found or invalid.", key);
+       return false;
+    }
+}
+
+static bool extract_integer(cJSON *parent, const char *key, int *dest, const char *tag, const char *log_prefix) {
+    cJSON *item = cJSON_GetObjectItem(parent, key);
+    if (item != NULL && cJSON_IsNumber(item)) {
+        *dest = item->valueint;
+        if (log_prefix) {
+            ESP_LOGI(tag, "%s: %d", log_prefix, *dest);
+        }
+        return true;
+    } else {
+        ESP_LOGW(tag, "Number '%s' not found or invalid.", key);
+        return false;
+    }
+}
+
+static bool extract_string_array(cJSON *parent, const char *key, char dest_array[][MAX_MAC_LEN], int max_items, size_t item_size, const char *tag, const char *log_prefix) {
+    cJSON *array = cJSON_GetObjectItem(parent, key);
+    if (array == NULL || !cJSON_IsArray(array)) {
+         ESP_LOGW(tag, "Array '%s' not found or invalid.", key);
+         return false;
     }
 
-    ESP_LOGI(TAG, "JSON recibido: %s", json_str);
+    int list_size = cJSON_GetArraySize(array);
+    int items_to_copy = (list_size < max_items) ? list_size : max_items;
 
-    // Parsear el JSON
+    for (int i = 0; i < items_to_copy; i++) {
+        cJSON *mac_item = cJSON_GetArrayItem(array, i);
+        if (mac_item != NULL && cJSON_IsString(mac_item) && mac_item->valuestring != NULL) {
+            strncpy(dest_array[i], mac_item->valuestring, item_size - 1);
+            dest_array[i][item_size - 1] = '\0';
+            if (log_prefix) {
+                 ESP_LOGI(tag, "%s [%d]: %s", log_prefix, i, dest_array[i]);
+            }
+        } else {
+            ESP_LOGW(tag, "Invalid element %d in array '%s'.", i, key);
+            dest_array[i][0] = '\0';
+        }
+    }
+     for (int i = items_to_copy; i < max_items; i++) {
+         dest_array[i][0] = '\0';
+     }
+    return true;
+}
+
+
+void handle_json_response(const char *json_str) {
+    if (json_str == NULL) {
+        ESP_LOGE(TAG, "A valid JSON was not received (NULL)");
+        return;
+    }
+    ESP_LOGI(TAG, "JSON received: %s", json_str);
+
     cJSON *root = cJSON_Parse(json_str);
     if (root == NULL) {
-        ESP_LOGE(TAG, "Error al parsear el JSON");
-        return;
-    }
-
-    // Navegar al campo props.mqtt.url
-    cJSON *props = cJSON_GetObjectItem(root, "props");
-    if (props == NULL || !cJSON_IsObject(props)) {
-        ESP_LOGE(TAG, "No se encontró el objeto 'props' en el JSON");
-        cJSON_Delete(root);
-        return;
-    }
-
-    // Navegar al campo filter dentro de props
-    cJSON *filter = cJSON_GetObjectItem(props, "filter");
-    if (filter == NULL || !cJSON_IsObject(filter)) {
-        ESP_LOGE(TAG, "No se encontró el objeto 'filter' en el JSON");
-        cJSON_Delete(root);
-        return;
-    }
-
-    // Leer blackList (lista de MACs)
-    cJSON *blackList = cJSON_GetObjectItem(filter, "blackList");
-    if (blackList != NULL && cJSON_IsArray(blackList)) {
-        int list_size = cJSON_GetArraySize(blackList);
-        for (int i = 0; i < list_size && i < 10; i++) {  // Suponemos que no hay más de 10 MACs
-            cJSON *mac_item = cJSON_GetArrayItem(blackList, i);
-            if (mac_item != NULL && cJSON_IsString(mac_item)) {
-                strncpy(filter_blacklist[i], mac_item->valuestring, sizeof(filter_blacklist[i]) - 1);
-                filter_blacklist[i][sizeof(filter_blacklist[i]) - 1] = '\0'; // Asegurar terminación nula
-            }
+        const char *error_ptr = cJSON_GetErrorPtr();
+        if (error_ptr != NULL) {
+            ESP_LOGE(TAG, "Error parsing JSON near: %s", error_ptr);
         }
+        return;
     }
 
-    // Leer whiteList (lista de MACs)
-    cJSON *whiteList = cJSON_GetObjectItem(filter, "whiteList");
-    if (whiteList != NULL && cJSON_IsArray(whiteList)) {
-        int list_size = cJSON_GetArraySize(whiteList);
-        for (int i = 0; i < list_size && i < 10; i++) {  // Suponemos que no hay más de 10 MACs
-            cJSON *mac_item = cJSON_GetArrayItem(whiteList, i);
-            if (mac_item != NULL && cJSON_IsString(mac_item)) {
-                strncpy(filter_whitelist[i], mac_item->valuestring, sizeof(filter_whitelist[i]) - 1);
-                filter_whitelist[i][sizeof(filter_whitelist[i]) - 1] = '\0'; // Asegurar terminación nula
-            }
-        }
-    }
-
-    // Leer regexMac
-    cJSON *regexMac = cJSON_GetObjectItem(filter, "regexMac");
-    if (regexMac != NULL && cJSON_IsString(regexMac)) {
-        strncpy(filter_regexMac, regexMac->valuestring, sizeof(filter_regexMac) - 1);
-        filter_regexMac[sizeof(filter_regexMac) - 1] = '\0'; // Asegurar terminación nula
-        ESP_LOGI(TAG, "Filter regexMac: %s", filter_regexMac);
-    }
-
-    // Leer regexRaw
-    cJSON *regexRaw = cJSON_GetObjectItem(filter, "regexRaw");
-    if (regexRaw != NULL && cJSON_IsString(regexRaw)) {
-        strncpy(filter_regexRaw, regexRaw->valuestring, sizeof(filter_regexRaw) - 1);
-        filter_regexRaw[sizeof(filter_regexRaw) - 1] = '\0'; // Asegurar terminación nula
-        ESP_LOGI(TAG, "Filter regexRaw: %s", filter_regexRaw);
-    }
-
-    // Leer rssi
-    cJSON *rssi = cJSON_GetObjectItem(filter, "rssi");
-    if (rssi != NULL && cJSON_IsNumber(rssi)) {
-        filter_rssi = rssi->valueint;
-        ESP_LOGI(TAG, "Filter RSSI: %d", filter_rssi);
-    }
-
-    // Navegar al campo mqtt dentro de props
-    cJSON *mqtt = cJSON_GetObjectItem(props, "mqtt");
-    if (mqtt == NULL || !cJSON_IsObject(mqtt)) {
-        ESP_LOGE(TAG, "No se encontró el objeto 'mqtt' en el JSON");
+    cJSON *props = get_nested_object(root, "props", TAG);
+    if (!props) {
         cJSON_Delete(root);
         return;
     }
 
-    // Leer clientId
-    cJSON *clientId = cJSON_GetObjectItem(mqtt, "clientId");
-    if (clientId && cJSON_IsString(clientId)) {
-        strncat(mqtt_clientId, clientId->valuestring, sizeof(mqtt_clientId) - strlen(mqtt_clientId) - 1);
-        ESP_LOGI(TAG, "MQTT clientId: %s", mqtt_clientId);
+    cJSON *filter = get_nested_object(props, "filter", TAG);
+    cJSON *mqtt = get_nested_object(props, "mqtt", TAG);
+
+    if (filter) {
+        extract_string_array(filter, "blackList", filter_blacklist, MAX_FILTER_LIST_SIZE, MAX_MAC_LEN, TAG, "Filter blackList MAC");
+        extract_string_array(filter, "whiteList", filter_whitelist, MAX_FILTER_LIST_SIZE, MAX_MAC_LEN, TAG, "Filter whiteList MAC");
+        extract_string(filter, "regexMac", filter_regexMac, sizeof(filter_regexMac), TAG, "Filter regexMac");
+        extract_string(filter, "regexRaw", filter_regexRaw, sizeof(filter_regexRaw), TAG, "Filter regexRaw");
+        extract_integer(filter, "rssi", &filter_rssi, TAG, "Filter RSSI");
     }
 
-    // Leer keepalive
-    cJSON *keepalive = cJSON_GetObjectItem(mqtt, "keepalive");
-    if (keepalive != NULL && cJSON_IsNumber(keepalive)) {
-        mqtt_keepalive = keepalive->valueint;
-        ESP_LOGI(TAG, "MQTT keepalive: %d", mqtt_keepalive);
+    if (mqtt) {
+        extract_string(mqtt, "clientId", mqtt_clientId, sizeof(mqtt_clientId), TAG, "MQTT clientId");
+        extract_integer(mqtt, "keepalive", &mqtt_keepalive, TAG, "MQTT keepalive");
+        extract_string(mqtt, "lastWill", mqtt_lastWill, sizeof(mqtt_lastWill), TAG, "MQTT lastWill");
+        extract_string(mqtt, "password", mqtt_password, sizeof(mqtt_password), TAG, "MQTT password");
+        extract_string(mqtt, "publishTopic", mqtt_publishTopic, sizeof(mqtt_publishTopic), TAG, "MQTT publishTopic");
+        extract_integer(mqtt, "qos", &mqtt_qos, TAG, "MQTT QoS");
+        extract_string(mqtt, "responseTopic", mqtt_responseTopic, sizeof(mqtt_responseTopic), TAG, "MQTT responseTopic");
+        extract_string(mqtt, "subscribeTopic", mqtt_subscribeTopic, sizeof(mqtt_subscribeTopic), TAG, "MQTT subscribeTopic");
+        extract_string(mqtt, "url", mqtt_url, sizeof(mqtt_url), TAG, "MQTT url");
+        extract_string(mqtt, "userName", mqtt_userName, sizeof(mqtt_userName), TAG, "MQTT userName");
     }
 
-    // Leer lastWill
-    cJSON *lastWill = cJSON_GetObjectItem(mqtt, "lastWill");
-    if (lastWill != NULL && cJSON_IsString(lastWill)) {
-        strncpy(mqtt_lastWill, lastWill->valuestring, sizeof(mqtt_lastWill) - 1);
-        mqtt_lastWill[sizeof(mqtt_lastWill) - 1] = '\0'; // Asegurar terminación nula
-        ESP_LOGI(TAG, "MQTT lastWill: %s", mqtt_lastWill);
-    }
-
-    // Leer password de MQTT
-    cJSON *mqtt_password_item = cJSON_GetObjectItem(mqtt, "password");
-    if (mqtt_password_item != NULL && cJSON_IsString(mqtt_password_item)) {
-        strncpy(mqtt_password, mqtt_password_item->valuestring, sizeof(mqtt_password) - 1);
-        mqtt_password[sizeof(mqtt_password) - 1] = '\0'; // Asegurar terminación nula
-        ESP_LOGI(TAG, "MQTT password: %s", mqtt_password);
-    }
-
-    // Leer publishTopic
-    cJSON *publishTopic = cJSON_GetObjectItem(mqtt, "publishTopic");
-    if (publishTopic != NULL && cJSON_IsString(publishTopic)) {
-        strncpy(mqtt_publishTopic, publishTopic->valuestring, sizeof(mqtt_publishTopic) - 1);
-        mqtt_publishTopic[sizeof(mqtt_publishTopic) - 1] = '\0'; // Asegurar terminación nula
-        ESP_LOGI(TAG, "MQTT publishTopic: %s", mqtt_publishTopic);
-    }
-
-    // Leer qos
-    cJSON *qos = cJSON_GetObjectItem(mqtt, "qos");
-    if (qos != NULL && cJSON_IsNumber(qos)) {
-        mqtt_qos = qos->valueint;
-        ESP_LOGI(TAG, "MQTT QoS: %d", mqtt_qos);
-    }
-
-    // Leer responseTopic
-    cJSON *responseTopic = cJSON_GetObjectItem(mqtt, "responseTopic");
-    if (responseTopic != NULL && cJSON_IsString(responseTopic)) {
-        strncpy(mqtt_responseTopic, responseTopic->valuestring, sizeof(mqtt_responseTopic) - 1);
-        mqtt_responseTopic[sizeof(mqtt_responseTopic) - 1] = '\0'; // Asegurar terminación nula
-        ESP_LOGI(TAG, "MQTT responseTopic: %s", mqtt_responseTopic);
-    }
-
-    // Leer subscribeTopic
-    cJSON *subscribeTopic = cJSON_GetObjectItem(mqtt, "subscribeTopic");
-    if (subscribeTopic != NULL && cJSON_IsString(subscribeTopic)) {
-        strncpy(mqtt_subscribeTopic, subscribeTopic->valuestring, sizeof(mqtt_subscribeTopic) - 1);
-        mqtt_subscribeTopic[sizeof(mqtt_subscribeTopic) - 1] = '\0'; // Asegurar terminación nula
-        ESP_LOGI(TAG, "MQTT subscribeTopic: %s", mqtt_subscribeTopic);
-    }
-
-    // Leer url
-    cJSON *url = cJSON_GetObjectItem(mqtt, "url");
-    if (url != NULL && cJSON_IsString(url)) {
-        strncpy(mqtt_url, url->valuestring, sizeof(mqtt_url) - 1);
-        mqtt_url[sizeof(mqtt_url) - 1] = '\0'; // Asegurar terminación nula
-        ESP_LOGI(TAG, "MQTT url: %s", mqtt_url);
-    }
-
-    // Leer userName
-    cJSON *userName = cJSON_GetObjectItem(mqtt, "userName");
-    if (userName != NULL && cJSON_IsString(userName)) {
-        strncpy(mqtt_userName, userName->valuestring, sizeof(mqtt_userName) - 1);
-        mqtt_userName[sizeof(mqtt_userName) - 1] = '\0'; // Asegurar terminación nula
-        ESP_LOGI(TAG, "MQTT userName: %s", mqtt_userName);
-    }
-
-    // Leer datos de Wi-Fi
     cJSON *wifi_array = cJSON_GetObjectItem(props, "wifi");
-    if (wifi_array == NULL || !cJSON_IsArray(wifi_array)) {
-        ESP_LOGE(TAG, "No se encontró el arreglo 'wifi' en el JSON");
-        cJSON_Delete(root);
-        return;
+    if (wifi_array != NULL && cJSON_IsArray(wifi_array)) {
+        cJSON *wifi_item = cJSON_GetArrayItem(wifi_array, 0);
+        if (wifi_item != NULL && cJSON_IsObject(wifi_item)) {
+            extract_string(wifi_item, "ssid", WIFI_SSID, sizeof(WIFI_SSID), TAG, "Wi-Fi SSID");
+            extract_string(wifi_item, "password", WIFI_PASS, sizeof(WIFI_PASS), TAG, "Wi-Fi Password");
+            extract_string(wifi_item, "bssid", wifi_bssid, sizeof(wifi_bssid), TAG, "Wi-Fi BSSID");
+        } else {
+            ESP_LOGE(TAG, "The first element of the 'wifi' array is not a valid object.");
+        }
+    } else {
+        ESP_LOGE(TAG, "Array 'wifi' not found or invalid.");
     }
 
-    cJSON *wifi_item = cJSON_GetArrayItem(wifi_array, 0);
-    if (wifi_item == NULL || !cJSON_IsObject(wifi_item)) {
-        ESP_LOGE(TAG, "No se encontró el objeto Wi-Fi en el arreglo");
-        cJSON_Delete(root);
-        return;
-    }
-
-    cJSON *ssid = cJSON_GetObjectItem(wifi_item, "ssid");
-    if (ssid != NULL && cJSON_IsString(ssid)) {
-        strncpy(WIFI_SSID, ssid->valuestring, sizeof(WIFI_SSID) - 1);
-        WIFI_SSID[sizeof(WIFI_SSID) - 1] = '\0'; // Asegurar terminación nula
-        ESP_LOGI(TAG, "Wi-Fi SSID: %s", WIFI_SSID);
-    }
-
-    // Leer password de Wi-Fi
-    cJSON *wifi_password_item = cJSON_GetObjectItem(wifi_item, "password");
-    if (wifi_password_item != NULL && cJSON_IsString(wifi_password_item)) {
-        strncpy(WIFI_PASS, wifi_password_item->valuestring, sizeof(WIFI_PASS) - 1);
-        WIFI_PASS[sizeof(WIFI_PASS) - 1] = '\0'; // Asegurar terminación nula
-        ESP_LOGI(TAG, "Wi-Fi Password: %s", WIFI_PASS);
-    }
-
-    cJSON *bssid = cJSON_GetObjectItem(wifi_item, "bssid");
-    if (bssid != NULL && cJSON_IsString(bssid)) {
-        strncpy(wifi_bssid, bssid->valuestring, sizeof(wifi_bssid) - 1);
-        wifi_bssid[sizeof(wifi_bssid) - 1] = '\0'; // Asegurar terminación nula
-        ESP_LOGI(TAG, "Wi-Fi BSSID: %s", wifi_bssid);
-    }
-
-    // Liberar memoria del JSON parseado
     cJSON_Delete(root);
 }
 
@@ -347,7 +274,7 @@ esp_err_t http_event_handler(esp_http_client_event_t *evt) {
 
     switch (evt->event_id) {
         case HTTP_EVENT_ON_HEADER:
-            ESP_LOGI(TAG, "Header recieved: %.*s", evt->data_len, (char *)evt->data);
+            // ESP_LOGI(TAG, "Header received: %.*s", evt->data_len, (char *)evt->data);
             break;
 
         case HTTP_EVENT_ON_DATA:
@@ -391,10 +318,10 @@ esp_err_t http_event_handler(esp_http_client_event_t *evt) {
     return ESP_OK;
 }
 
-esp_err_t fetch_config_from_api() 
+esp_err_t update_config() 
 {
     esp_http_client_config_t config = {
-        .url = API_URL,
+        .url = CONFIG_API_URL,
         .crt_bundle_attach = esp_crt_bundle_attach,
         .event_handler = http_event_handler,
         .timeout_ms = 5000,
@@ -404,7 +331,7 @@ esp_err_t fetch_config_from_api()
     esp_err_t err = esp_http_client_perform(client);
     esp_http_client_cleanup(client);
 
-    ESP_LOGI("API", "HTTP GET %s", err == ESP_OK ? "successful" : esp_err_to_name(err));
+    ESP_LOGI(TAG, "HTTP GET %s", err == ESP_OK ? "successful" : esp_err_to_name(err));
     return err;
 }
 
@@ -415,20 +342,15 @@ void app_main(void)
 	wifi_manager_init();
 	wifi_manager_start();
 
-    // is_wifi_connected()
-
-	while (!is_wifi_connected()) 
-    {
-        vTaskDelay(pdMS_TO_TICKS(500));
-    }
+	while (!is_wifi_connected()) {vTaskDelay(pdMS_TO_TICKS(500));}
 
 	// TODO: If lost wifi connection per more than 10 min, start modem
 
-	if (strcmp(DEVICE_UUID, "DEFAULT"))
+	if (strcmp(DEVICE_UUID, "DEFAULT")) // TODO: It have to update DEVICE_UUID
 	{
 		get_device_uuid(DEVICE_MAC, DEVICE_TOKEN, DEVICE_TYPE);
 	}
 
-    ESP_ERROR_CHECK(fetch_config_from_api()); // get config from device
+    ESP_ERROR_CHECK(update_config());
 
 }
