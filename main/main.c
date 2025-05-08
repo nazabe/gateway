@@ -77,6 +77,11 @@ char mqtt_responseTopic[MQTT_TOPIC_MAX_LEN] = MQTT_RESPONSE_TOPIC;
 char mqtt_subscribeTopic[MQTT_TOPIC_MAX_LEN] = MQTT_SUBSCRIBE_TOPIC;
 char mqtt_lastWill[MQTT_LAST_WILL_MAX_LEN] = MQTT_LAST_WILL;
 
+#define MAX_HTTP_RESPONSE_SIZE 2048
+#define MAX_HTTP_BUFFER_SIZE (MAX_HTTP_RESPONSE_SIZE + 1)
+
+static char http_response_buffer[MAX_HTTP_BUFFER_SIZE];
+
 static const char *json_str = NULL;
 static const char TAG[] = "main";
 
@@ -94,8 +99,6 @@ bool is_wifi_connected()
 
 int get_device_uuid(char *DEVICE_MAC, char *DEVICE_TYPE, char *DEVICE_TOKEN) { // TODO: It need have; MAC, Location (AP list), AP, password 
 
-    char wifi_bssid[32] = {0}; // TODO: This is the best way of obtain this variable?
-
     // Use Wifi-Manager to obtain SSID & Password
     wifi_config_t wifi_config;
     esp_err_t err = esp_wifi_get_config(WIFI_IF_STA, &wifi_config);
@@ -103,7 +106,7 @@ int get_device_uuid(char *DEVICE_MAC, char *DEVICE_TYPE, char *DEVICE_TOKEN) { /
     char request_data[256];
     snprintf(request_data, sizeof(request_data), 
              "{\"device_mac\":\"%s\",\"device_type\":\"%s\",\"device_token\":\"%s\",\"wifi_ssid\":\"%s\",\"wifi_password\":\"%s\",\"wifi_password\":\"%s\"}", 
-             DEVICE_MAC, DEVICE_TYPE, DEVICE_TOKEN, wifi_config.sta.ssid, wifi_config.sta.password, wifi_bssid); // TODO: Add BSSID
+             DEVICE_MAC, DEVICE_TYPE, DEVICE_TOKEN, wifi_config.sta.ssid, wifi_config.sta.password, wifi_bssid);
 
     esp_http_client_config_t config = { // esp_http_client_config_t is undefined, #include "esp_http_client.h" fix it
         .url = UUID_API_URL,
@@ -120,12 +123,12 @@ int get_device_uuid(char *DEVICE_MAC, char *DEVICE_TYPE, char *DEVICE_TOKEN) { /
         int http_response_code = esp_http_client_get_status_code(client);
         ESP_LOGI("HTTP", "HTTP Code: %d", http_response_code);
 
-        char response_buffer[128];
+        char output_buffer[128];
         int content_length = esp_http_client_get_content_length(client);
-        if (content_length > 0 && content_length < sizeof(response_buffer)) {
-            esp_http_client_read(client, response_buffer, content_length);
-            response_buffer[content_length] = '\0';
-            ESP_LOGI("HTTP", "Response: %s", response_buffer);
+        if (content_length > 0 && content_length < sizeof(output_buffer)) {
+            esp_http_client_read(client, output_buffer, content_length);
+            output_buffer[content_length] = '\0';
+            ESP_LOGI("HTTP", "Response: %s", output_buffer);
         }
 
         esp_http_client_cleanup(client);
@@ -151,9 +154,8 @@ static bool extract_string(cJSON *parent, const char *key, char *dest, size_t de
     if (item != NULL && cJSON_IsString(item) && item->valuestring != NULL) {
         strncpy(dest, item->valuestring, dest_size - 1);
         dest[dest_size - 1] = '\0';
-        if (log_prefix) {
-            ESP_LOGI(tag, "%s: %s", log_prefix, dest);
-        }
+        // NOTE: Commented out to avoid invasive logging; uncomment for debug if needed.
+        // if (log_prefix) {ESP_LOGI(tag, "%s: %s", log_prefix, dest);}
         return true;
     } else {
        ESP_LOGW(tag, "String '%s' not found or invalid.", key);
@@ -269,45 +271,47 @@ void process_json_response(const char *json_str) {
 }
 
 esp_err_t http_event_handler(esp_http_client_event_t *evt) {
-    static char *response_buffer = NULL;
+    static char *output_buffer; // Buffer to store response of http request from event handler
     static int response_len = 0;
 
     switch (evt->event_id) {
+        case HTTP_EVENT_ERROR:
+            ESP_LOGE(TAG, "HTTP_EVENT_ERROR");
+            break;
+
         case HTTP_EVENT_ON_HEADER:
+            // NOTE: Commented out to avoid invasive logging; uncomment for debug if needed.
             // ESP_LOGI(TAG, "Header received: %.*s", evt->data_len, (char *)evt->data);
+            // ESP_LOGD(TAG, "HTTP_EVENT_ON_HEADER, key=%s, value=%s", evt->header_key, evt->header_value); // TODO: Test this.
             break;
 
         case HTTP_EVENT_ON_DATA:
             if (esp_http_client_is_chunked_response(evt->client)) break;
 
-            char *new_buf = realloc(response_buffer, response_len + evt->data_len + 1);
-            if (!new_buf) {
-                ESP_LOGE(TAG, "Error when asign memory");
-                free(response_buffer);
-                response_buffer = NULL;
-                response_len = 0;
-                return ESP_FAIL;
+            if (evt->data && (response_len + evt->data_len <= MAX_HTTP_RESPONSE_SIZE)) {
+                memcpy(http_response_buffer + response_len, evt->data, evt->data_len);
+                response_len += evt->data_len;
+                http_response_buffer[response_len] = '\0';
+            } else {
+                ESP_LOGW(TAG, "HTTP response buffer overflow or null data");
+                http_response_buffer[MAX_HTTP_RESPONSE_SIZE] = '\0';
             }
-
-            response_buffer = new_buf;
-            memcpy(response_buffer + response_len, evt->data, evt->data_len);
-            response_len += evt->data_len;
-            response_buffer[response_len] = '\0';
             break;
 
+
         case HTTP_EVENT_ON_FINISH:
-            if (response_buffer) {
-                json_str = response_buffer;
+            if (output_buffer) {
+                json_str = output_buffer;
                 process_json_response(json_str);
-                free(response_buffer);
-                response_buffer = NULL;
+                free(output_buffer);
+                output_buffer = NULL;
                 response_len = 0;
             }
             break;
 
         case HTTP_EVENT_DISCONNECTED:
-            free(response_buffer);
-            response_buffer = NULL;
+            free(output_buffer);
+            output_buffer = NULL;
             response_len = 0;
             break;
 
