@@ -52,9 +52,9 @@
 #define MQTT_LAST_WILL_MAX_LEN 128
 #define MQTT_TOPIC_MAX_LEN 128
 
-char *DEVICE_UUID = "DEFAULT";
-char *DEVICE_MAC = "IM_NOT_A_MAC";             // TODO: Replace with real MAC
-char *DEVICE_TOKEN = "THIS_IS_NOT_A_TOKEN";    // TODO: Consider not hardcoding
+char DEVICE_MAC[13];
+char *DEVICE_TOKEN1 = "THIS_IS_NOT_A_TOKEN";    // TODO: Consider not hardcoding
+char *DEVICE_TOKEN2 = "THIS_IS_NOT_A_TOKEN";
 char *DEVICE_TYPE = "GATEWAY";
 
 char WIFI_SSID[WIFI_SSID_MAX_LEN];
@@ -71,7 +71,7 @@ char filter_whitelist[MAX_WHITELIST_SIZE][18] = {0};
 char filter_regexMac[FILTER_MAC_REGEX_MAX_LEN];
 char filter_regexRaw[FILTER_RAW_REGEX_MAX_LEN];
 
-char mqtt_clientId[MQTT_CLIENT_ID_MAX_LEN] = MQTT_CLIENT_ID;
+char mqtt_clientId[MQTT_CLIENT_ID_MAX_LEN] = DEVICE_UUID;
 char mqtt_publishTopic[MQTT_TOPIC_MAX_LEN] = MQTT_PUBLISH_TOPIC;
 char mqtt_responseTopic[MQTT_TOPIC_MAX_LEN] = MQTT_RESPONSE_TOPIC;
 char mqtt_subscribeTopic[MQTT_TOPIC_MAX_LEN] = MQTT_SUBSCRIBE_TOPIC;
@@ -81,6 +81,13 @@ char mqtt_lastWill[MQTT_LAST_WILL_MAX_LEN] = MQTT_LAST_WILL;
 #define MAX_HTTP_BUFFER_SIZE (MAX_HTTP_RESPONSE_SIZE + 1)
 
 static char http_response_buffer[MAX_HTTP_BUFFER_SIZE];
+
+// Configuration for NTP
+#define NTP_SERVER_HOSTNAME "pool.ntp.org"
+#define NTP_MAX_RETRIES     5
+#define NTP_RETRY_DELAY_MS  1000
+
+static bool sntp_initialized_flag = false;
 
 static const char *json_str = NULL;
 static const char TAG[] = "main";
@@ -97,7 +104,7 @@ bool is_wifi_connected()
     return false;
 }
 
-int get_device_uuid(char *DEVICE_MAC, char *DEVICE_TYPE, char *DEVICE_TOKEN) { // TODO: It need have; MAC, Location (AP list), AP, password 
+int get_device_uuid(char *DEVICE_MAC, char *DEVICE_TYPE, char *DEVICE_TOKEN1) { // TODO: It need have; Location (AP list), Flash ID, Token (or tokens)
 
     // Use Wifi-Manager to obtain SSID & Password
     wifi_config_t wifi_config;
@@ -105,8 +112,8 @@ int get_device_uuid(char *DEVICE_MAC, char *DEVICE_TYPE, char *DEVICE_TOKEN) { /
 
     char request_data[256];
     snprintf(request_data, sizeof(request_data), 
-             "{\"device_mac\":\"%s\",\"device_type\":\"%s\",\"device_token\":\"%s\",\"wifi_ssid\":\"%s\",\"wifi_password\":\"%s\",\"wifi_password\":\"%s\"}", 
-             DEVICE_MAC, DEVICE_TYPE, DEVICE_TOKEN, wifi_config.sta.ssid, wifi_config.sta.password, wifi_bssid);
+             "{\"device_mac\":\"%s\",\"device_type\":\"%s\",\"device_token\":\"%s\",\"wifi_ssid\":\"%s\",\"wifi_password\":\"%s\"}", 
+             DEVICE_MAC, DEVICE_TYPE, DEVICE_TOKEN1, wifi_config.sta.ssid, wifi_config.sta.password);
 
     esp_http_client_config_t config = { // esp_http_client_config_t is undefined, #include "esp_http_client.h" fix it
         .url = UUID_API_URL,
@@ -281,8 +288,7 @@ esp_err_t http_event_handler(esp_http_client_event_t *evt) {
 
         case HTTP_EVENT_ON_HEADER:
             // NOTE: Commented out to avoid invasive logging; uncomment for debug if needed.
-            // ESP_LOGI(TAG, "Header received: %.*s", evt->data_len, (char *)evt->data);
-            // ESP_LOGD(TAG, "HTTP_EVENT_ON_HEADER, key=%s, value=%s", evt->header_key, evt->header_value); // TODO: Test this.
+            // ESP_LOGD(TAG, "HTTP_EVENT_ON_HEADER, key=%s, value=%s", evt->header_key, evt->header_value);
             break;
 
         case HTTP_EVENT_ON_DATA:
@@ -339,8 +345,91 @@ esp_err_t update_config()
     return err;
 }
 
+void ntp_sync(void)
+{
+    if (!sntp_initialized_flag) {
+        esp_sntp_setoperatingmode(SNTP_OPMODE_POLL);
+        esp_sntp_setservername(0, NTP_SERVER_HOSTNAME);
+
+        esp_sntp_init();
+        sntp_initialized_flag = true;
+        // ESP_LOGI(TAG, "NTP: SNTP initialized. Waiting for time synchronization...");
+    } else {
+        // NOTE: Commented out to avoid invasive logging; uncomment for debug if needed.
+        // If already initialized, check if it's enabled. If not, re-init.
+        // This handles cases where sntp_stop() might have been called elsewhere.
+        if (!esp_sntp_enabled()) {
+            // ESP_LOGI(TAG, "NTP: SNTP was stopped. Re-initializing...");
+            esp_sntp_init(); // Re-initialize if it was stopped
+        } else {
+            // ESP_LOGI(TAG, "NTP: SNTP already initialized and running. Checking status...");
+        }
+    }
+
+    int retries = 0;
+    while (sntp_get_sync_status() == SNTP_SYNC_STATUS_RESET && ++retries <= NTP_MAX_RETRIES)
+    {
+        ESP_LOGI(TAG, "NTP: Waiting for system time to be set... (Attempt %d/%d, Status: RESET)",
+                 retries, NTP_MAX_RETRIES);
+        vTaskDelay(pdMS_TO_TICKS(NTP_RETRY_DELAY_MS));
+    }
+
+    // Second loop for "IN_PROGRESS" status, common after RESET
+    // Reset retries for this phase if you want dedicated retries for IN_PROGRESS
+    // Or continue with existing retries if total attempts matter more.
+    // For simplicity, we'll use the same retry counter.
+    while (sntp_get_sync_status() == SNTP_SYNC_STATUS_IN_PROGRESS && retries <= NTP_MAX_RETRIES)
+    {
+        ESP_LOGI(TAG, "NTP: Waiting for system time to be set... (Attempt %d/%d, Status: IN_PROGRESS)",
+                 retries, NTP_MAX_RETRIES);
+        vTaskDelay(pdMS_TO_TICKS(NTP_RETRY_DELAY_MS));
+        retries++; // Increment here as the while condition doesn't do ++retries
+    }
+
+
+    if (sntp_get_sync_status() == SNTP_SYNC_STATUS_COMPLETED)
+    {
+        ESP_LOGI(TAG, "NTP: Time synchronized successfully!");
+
+        // Optional: Log the synchronized time
+        time_t now;
+        struct tm timeinfo;
+        char strftime_buf[64];
+
+        time(&now);
+        // Set Timezone (Example: UTC, or find yours at https://github.com/nayarsystems/posix_tz_db/blob/master/zones.csv)
+        // setenv("TZ", "UTC0", 1); // For UTC
+        // setenv("TZ", "CET-1CEST,M3.5.0,M10.5.0/3", 1); // Example: Central European Time
+        // tzset(); // Apply the timezone
+
+        localtime_r(&now, &timeinfo);
+        strftime(strftime_buf, sizeof(strftime_buf), "%c", &timeinfo); // Format: e.g., "Sat Nov  4 14:01:02 2023"
+        ESP_LOGI(TAG, "NTP: Current system time after sync: %s", strftime_buf);
+
+    }
+    else
+    {
+        ESP_LOGE(TAG, "NTP: Failed to synchronize time after %d attempts.", retries > NTP_MAX_RETRIES ? NTP_MAX_RETRIES : retries);
+        ESP_LOGI(TAG, "NTP: Current sync status: %d (0:Reset, 1:Completed, 2:InProgress)", sntp_get_sync_status());
+        // sntp_stop(); // Optionally stop SNTP to free resources if sync fails persistently
+        sntp_initialized_flag = false; // If stopping, allow re-initialization
+    }
+}
+
+void init_device_mac()
+{
+    uint8_t mac[6];
+
+    esp_read_mac(mac, ESP_MAC_WIFI_STA); // It could use ESP_MAC_BT
+
+    snprintf(DEVICE_MAC, sizeof(DEVICE_MAC), "%02X%02X%02X%02X%02X%02X",
+            mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+}
+
 void app_main(void)
 {
+
+    init_device_mac();
 
 	/* start the wifi manager */
 	wifi_manager_init();
@@ -352,9 +441,11 @@ void app_main(void)
 
 	if (strcmp(DEVICE_UUID, "DEFAULT")) // TODO: It have to update DEVICE_UUID
 	{
-		get_device_uuid(DEVICE_MAC, DEVICE_TOKEN, DEVICE_TYPE);
+		get_device_uuid(DEVICE_MAC, DEVICE_TOKEN1, DEVICE_TYPE);
 	}
 
     ESP_ERROR_CHECK(update_config());
+
+    ntp_sync();
 
 }
