@@ -13,6 +13,8 @@
         "esp_wifi.h": "c",
         "esp_netif.h": "c",
         "esp_system.h": "c",
-        "wifi_manager.h": "c"
+        "wifi_manager.h": "c",
+        "freertos.h": "c",
+        "task.h": "c"
     }
 }
