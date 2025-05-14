@@ -108,6 +108,18 @@ static char http_response_buffer[MAX_HTTP_BUFFER_SIZE];
 static bool sntp_initialized_flag = false;
 static volatile bool sntp_sync_done = false;
 
+typedef struct
+{
+    char mac[18];           // "XX:XX:XX:XX:XX:XX" + null. TODO: it can be 6 bytes
+    int rssi;               // integer value, normally negative
+    char rawData[100];      // 31 * 2 = 62 bytes → 124 chars + \0 = 125 bytes
+    uint64_t timestamp[32];     // Time (ej. ISO 8601) TODO: uint64, timestamp 32 its a lot, unt64 its enough
+} ble_packet_t;
+
+static int buffer_count = 0;
+#define BUFFER_SIZE 500
+static ble_packet_t buffer[BUFFER_SIZE];
+
 static const char *json_str = NULL;
 static const char TAG[] = "main";
 
@@ -409,7 +421,7 @@ esp_err_t update_config()
     return err;
 }
 
-static void time_sync_notification_cb(struct timeval *tv) // Callback resolves sync problems
+static void time_sync_notification_cb(struct timeval *tv)
 {
     sntp_sync_done = true;
     ESP_LOGI(TAG, "NTP: Time sync callback fired");
@@ -491,7 +503,7 @@ void init_device_mac()
              mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
 }
 
-void get_current_timestamp(char *timestamp, size_t max_len)
+void get_current_utc_timestamp(char *timestamp, size_t max_len)
 {
     struct timeval tv;
     if (gettimeofday(&tv, NULL) != 0)
@@ -502,7 +514,8 @@ void get_current_timestamp(char *timestamp, size_t max_len)
     }
 
     struct tm timeinfo;
-    if (gmtime_r(&tv.tv_sec, &timeinfo) == NULL)
+    // if (gmtime_r(&tv.tv_sec, &timeinfo) == NULL)
+    if (localtime_r(&tv.tv_sec, &timeinfo) == NULL)
     {
         ESP_LOGE(TAG, "Failed to convert time to UTC");
         snprintf(timestamp, max_len, "N/A");
@@ -510,9 +523,25 @@ void get_current_timestamp(char *timestamp, size_t max_len)
     }
 
     // Format timestamp in ISO 8601 format
-    snprintf(timestamp, max_len, "%04d-%02d-%02dT%02d:%02d:%02d.%03ldZ",
+    snprintf(timestamp, max_len, "%04d-%02d-%02dT%02d:%02d:%02d.%03ld",
              timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday,
              timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec, tv.tv_usec / 1000);
+}
+
+void IRAM_ATTR add_to_buffer(const char *mac, const char *rawData, const char *timestamp, int rssi) {
+    
+    if (buffer_count >= BUFFER_SIZE) {
+        // ESP_EARLY_LOGW(TAG, "Buffer lleno, descartando paquete");
+    } else { 
+        
+        // TODO :snprintf over memcpy?
+        snprintf(buffer[buffer_count].mac, sizeof(buffer[buffer_count].mac), "%s", mac);
+        snprintf(buffer[buffer_count].rawData, sizeof(buffer[buffer_count].rawData), "%s", rawData);
+        snprintf(buffer[buffer_count].timestamp, sizeof(buffer[buffer_count].timestamp), "%s", timestamp);
+        buffer[buffer_count].rssi = rssi;
+        
+        buffer_count++;
+    }
 }
 
 static inline char nibble_to_hex(uint8_t nibble) {
@@ -569,9 +598,9 @@ static int IRAM_ATTR ble_scan_callback(struct ble_gap_event *event, void *arg)
         }
 
         char timestamp[32];
-        get_current_timestamp(timestamp, sizeof(timestamp));
+        get_current_utc_timestamp(timestamp, sizeof(timestamp));
 
-        // add_to_buffer(mac_str, payload_hex, timestamp, event->disc.rssi);
+        add_to_buffer(mac_str, payload_hex, timestamp, event->disc.rssi);
         break;
     }
 
@@ -639,5 +668,5 @@ void app_main(void)
     esp_nimble_hci_init();
     nimble_port_init();
 
-    // ble_hs_cfg.sync_cb = ble_app_scan;
+    ble_hs_cfg.sync_cb = ble_app_scan;
 }
