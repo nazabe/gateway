@@ -30,6 +30,11 @@
 #include "host/ble_hs.h"
 #include "host/ble_gap.h"
 
+// NVS and bootloader
+#include "nvs_flash.h"
+#include "bootloader_random.h"
+#include "nvs.h"
+
 // HTTP & JSON
 #include "esp_http_client.h"
 #include "cJSON.h"
@@ -96,14 +101,17 @@ char mqtt_lastWill[MQTT_LAST_WILL_MAX_LEN] = MQTT_LAST_WILL;
 static char http_response_buffer[MAX_HTTP_BUFFER_SIZE];
 
 // Configuration for NTP
-#define NTP_SERVER_HOSTNAME "pool.ntp.org"
+#define NTP_SERVER_HOSTNAME "pool.ntp.org" // "time.google.com"
 #define NTP_MAX_RETRIES 5
 #define NTP_RETRY_DELAY_MS 1000
 
 static bool sntp_initialized_flag = false;
+static volatile bool sntp_sync_done = false;
 
 static const char *json_str = NULL;
 static const char TAG[] = "main";
+
+void ble_app_scan(void);
 
 esp_http_client_handle_t client;
 
@@ -393,12 +401,18 @@ esp_err_t update_config()
         .timeout_ms = 5000,
     };
 
-    esp_http_client_handle_t client = esp_http_client_init(&config);
+    client = esp_http_client_init(&config);
     esp_err_t err = esp_http_client_perform(client);
     esp_http_client_cleanup(client);
 
     ESP_LOGI(TAG, "HTTP GET %s", err == ESP_OK ? "successful" : esp_err_to_name(err));
     return err;
+}
+
+static void time_sync_notification_cb(struct timeval *tv) // Callback resolves sync problems
+{
+    sntp_sync_done = true;
+    ESP_LOGI(TAG, "NTP: Time sync callback fired");
 }
 
 void ntp_sync(void)
@@ -407,10 +421,13 @@ void ntp_sync(void)
     {
         esp_sntp_setoperatingmode(SNTP_OPMODE_POLL);
         esp_sntp_setservername(0, NTP_SERVER_HOSTNAME);
+        // esp_sntp_setservername(0, "216.239.35.0"); // time.google.com IP to test DNS
+
+        esp_sntp_set_time_sync_notification_cb(time_sync_notification_cb);
 
         esp_sntp_init();
         sntp_initialized_flag = true;
-        // ESP_LOGI(TAG, "NTP: SNTP initialized. Waiting for time synchronization...");
+        ESP_LOGI(TAG, "NTP: SNTP initialized. Waiting for time synchronization...");
     }
     else
     {
@@ -419,31 +436,17 @@ void ntp_sync(void)
         // This handles cases where sntp_stop() might have been called elsewhere.
         if (!esp_sntp_enabled())
         {
-            // ESP_LOGI(TAG, "NTP: SNTP was stopped. Re-initializing...");
+            ESP_LOGI(TAG, "NTP: SNTP was stopped. Re-initializing...");
             esp_sntp_init(); // Re-initialize if it was stopped
-            // } else {
-            // ESP_LOGI(TAG, "NTP: SNTP already initialized and running. Checking status...");
+            } else {
+            ESP_LOGI(TAG, "NTP: SNTP already initialized and running. Checking status...");
         }
     }
-
-    int retries = 0;
-    while (sntp_get_sync_status() == SNTP_SYNC_STATUS_RESET && ++retries <= NTP_MAX_RETRIES)
+    
+    while (!sntp_sync_done)
     {
-        ESP_LOGI(TAG, "NTP: Waiting for system time to be set... (Attempt %d/%d, Status: RESET)",
-                 retries, NTP_MAX_RETRIES);
+        ESP_LOGI(TAG, "NTP: Waiting for system time to be set...");
         vTaskDelay(pdMS_TO_TICKS(NTP_RETRY_DELAY_MS));
-    }
-
-    // Second loop for "IN_PROGRESS" status, common after RESET
-    // Reset retries for this phase if you want dedicated retries for IN_PROGRESS
-    // Or continue with existing retries if total attempts matter more.
-    // For simplicity, we'll use the same retry counter.
-    while (sntp_get_sync_status() == SNTP_SYNC_STATUS_IN_PROGRESS && retries <= NTP_MAX_RETRIES)
-    {
-        ESP_LOGI(TAG, "NTP: Waiting for system time to be set... (Attempt %d/%d, Status: IN_PROGRESS)",
-                 retries, NTP_MAX_RETRIES);
-        vTaskDelay(pdMS_TO_TICKS(NTP_RETRY_DELAY_MS));
-        retries++; // Increment here as the while condition doesn't do ++retries
     }
 
     if (sntp_get_sync_status() == SNTP_SYNC_STATUS_COMPLETED)
@@ -457,9 +460,9 @@ void ntp_sync(void)
 
         time(&now);
         // Set Timezone (Example: UTC, or find yours at https://github.com/nayarsystems/posix_tz_db/blob/master/zones.csv)
-        // setenv("TZ", "UTC0", 1); // For UTC
+        setenv("TZ", "UTC+3", 1); // For ARG
         // setenv("TZ", "CET-1CEST,M3.5.0,M10.5.0/3", 1); // Example: Central European Time
-        // tzset(); // Apply the timezone
+        tzset(); // Apply the timezone
 
         localtime_r(&now, &timeinfo);
         strftime(strftime_buf, sizeof(strftime_buf), "%c", &timeinfo); // Format: e.g., "Sat Nov  4 14:01:02 2023"
@@ -467,11 +470,15 @@ void ntp_sync(void)
     }
     else
     {
-        ESP_LOGE(TAG, "NTP: Failed to synchronize time after %d attempts.", retries > NTP_MAX_RETRIES ? NTP_MAX_RETRIES : retries);
+        ESP_LOGE(TAG, "NTP: Failed to synchronize time.");
         ESP_LOGI(TAG, "NTP: Current sync status: %d (0:Reset, 1:Completed, 2:InProgress)", sntp_get_sync_status());
         // sntp_stop(); // Optionally stop SNTP to free resources if sync fails persistently
         sntp_initialized_flag = false; // If stopping, allow re-initialization
     }
+
+    // ESP_LOGI(TAG, "SNTP running: %s", esp_sntp_enabled() ? "yes" : "no");
+    // ESP_LOGI(TAG, "Server: %s", esp_sntp_getservername(0));
+
 }
 
 void init_device_mac()
@@ -482,6 +489,34 @@ void init_device_mac()
 
     snprintf(DEVICE_MAC, sizeof(DEVICE_MAC), "%02X%02X%02X%02X%02X%02X",
              mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+}
+
+void get_current_timestamp(char *timestamp, size_t max_len)
+{
+    struct timeval tv;
+    if (gettimeofday(&tv, NULL) != 0)
+    {
+        ESP_LOGE(TAG, "Failed to get current time");
+        snprintf(timestamp, max_len, "N/A");
+        return;
+    }
+
+    struct tm timeinfo;
+    if (gmtime_r(&tv.tv_sec, &timeinfo) == NULL)
+    {
+        ESP_LOGE(TAG, "Failed to convert time to UTC");
+        snprintf(timestamp, max_len, "N/A");
+        return;
+    }
+
+    // Format timestamp in ISO 8601 format
+    snprintf(timestamp, max_len, "%04d-%02d-%02dT%02d:%02d:%02d.%03ldZ",
+             timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday,
+             timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec, tv.tv_usec / 1000);
+}
+
+static inline char nibble_to_hex(uint8_t nibble) {
+    return (nibble < 10) ? ('0' + nibble) : ('A' + nibble - 10);
 }
 
 static int IRAM_ATTR ble_scan_callback(struct ble_gap_event *event, void *arg)
@@ -517,30 +552,26 @@ static int IRAM_ATTR ble_scan_callback(struct ble_gap_event *event, void *arg)
                  event->disc.addr.val[5], event->disc.addr.val[4], event->disc.addr.val[3],
                  event->disc.addr.val[2], event->disc.addr.val[1], event->disc.addr.val[0]);
 
-        char name_buf[32] = "";
-        if (fields.name_len > 0 && fields.name_len < sizeof(name_buf))
-        {
-            memcpy(name_buf, fields.name, fields.name_len);
-            name_buf[fields.name_len] = '\0';
-        }
+        char payload_hex[63];
+        int max_raw_bytes = (sizeof(payload_hex) - 1) / 2;
+        int raw_len = event->disc.length_data;
 
-        // Convert manufacturer data to hex if available
-        char payload_hex[63] = "No payload";
-        if (fields.mfg_data_len > 0 && fields.mfg_data_len * 2 < sizeof(payload_hex))
-        {
-            for (int i = 0; i < fields.mfg_data_len; i++)
-            {
-                uint8_t byte = fields.mfg_data[i];
-                payload_hex[i * 2] = nibble_to_hex(byte >> 4);
+        if (raw_len > 0 && raw_len <= max_raw_bytes) {
+            for (int i = 0; i < raw_len; i++) {
+                uint8_t byte = event->disc.data[i];
+                payload_hex[i * 2]     = nibble_to_hex(byte >> 4);
                 payload_hex[i * 2 + 1] = nibble_to_hex(byte & 0x0F);
             }
-            payload_hex[fields.mfg_data_len * 2] = '\0';
+            payload_hex[raw_len * 2] = '\0';
+        } else {
+            strncpy(payload_hex, "No payload", sizeof(payload_hex) - 1);
+            payload_hex[sizeof(payload_hex) - 1] = '\0';
         }
 
         char timestamp[32];
         get_current_timestamp(timestamp, sizeof(timestamp));
 
-        add_to_buffer(mac_str, payload_hex, timestamp, event->disc.rssi);
+        // add_to_buffer(mac_str, payload_hex, timestamp, event->disc.rssi);
         break;
     }
 
@@ -575,6 +606,16 @@ void app_main(void)
 
     init_device_mac();
 
+    esp_err_t err = nvs_flash_init();
+    if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND)
+    {
+        // NVS partition was truncated and needs to be erased
+        // Retry nvs_flash_init
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        err = nvs_flash_init();
+    }
+    ESP_ERROR_CHECK(err);
+
     /* start the wifi manager */
     wifi_manager_init();
     wifi_manager_start();
@@ -598,5 +639,5 @@ void app_main(void)
     esp_nimble_hci_init();
     nimble_port_init();
 
-    // ble_hs_cfg.sync_cb = ble_app_on_sync;
+    // ble_hs_cfg.sync_cb = ble_app_scan;
 }
