@@ -101,7 +101,7 @@ char mqtt_lastWill[MQTT_LAST_WILL_MAX_LEN] = MQTT_LAST_WILL;
 static char http_response_buffer[MAX_HTTP_BUFFER_SIZE];
 
 // Configuration for NTP
-#define NTP_SERVER_HOSTNAME "pool.ntp.org" // "time.google.com"
+#define NTP_SERVER_HOSTNAME "time.google.com" // "pool.ntp.org"
 #define NTP_MAX_RETRIES 5
 #define NTP_RETRY_DELAY_MS 1000
 
@@ -110,15 +110,17 @@ static volatile bool sntp_sync_done = false;
 
 typedef struct
 {
-    char mac[18];           // "XX:XX:XX:XX:XX:XX" + null. TODO: it can be 6 bytes
+    uint8_t mac[6];           // "XX:XX:XX:XX:XX:XX" + null. TODO: it can be 6 bytes
     int rssi;               // integer value, normally negative
     char rawData[100];      // 31 * 2 = 62 bytes → 124 chars + \0 = 125 bytes
-    uint64_t timestamp[32];     // Time (ej. ISO 8601) TODO: uint64, timestamp 32 its a lot, unt64 its enough
+    char timestamp[32];     // Time (ej. ISO 8601) TODO: uint64, timestamp 32 its a lot, unt64 its enough
 } ble_packet_t;
 
 static int buffer_count = 0;
 #define BUFFER_SIZE 500
 static ble_packet_t buffer[BUFFER_SIZE];
+
+static const char hex_chars[] = "0123456789ABCDEF";
 
 static const char *json_str = NULL;
 static const char TAG[] = "main";
@@ -429,79 +431,87 @@ static void time_sync_notification_cb(struct timeval *tv)
 
 void ntp_sync(void)
 {
+    ESP_LOGI(TAG, "NTP: Starting synchronization process...");
+
     if (!sntp_initialized_flag)
     {
+        ESP_LOGI(TAG, "NTP: SNTP not initialized. Initializing now...");
+
         esp_sntp_setoperatingmode(SNTP_OPMODE_POLL);
         esp_sntp_setservername(0, NTP_SERVER_HOSTNAME);
-        // esp_sntp_setservername(0, "216.239.35.0"); // time.google.com IP to test DNS
+        // esp_sntp_setservername(0, "216.239.35.0"); // Use IP if DNS fails
 
+        ESP_LOGI(TAG, "NTP: Configured server: %s", esp_sntp_getservername(0));
         esp_sntp_set_time_sync_notification_cb(time_sync_notification_cb);
 
         esp_sntp_init();
         sntp_initialized_flag = true;
-        ESP_LOGI(TAG, "NTP: SNTP initialized. Waiting for time synchronization...");
+        ESP_LOGI(TAG, "NTP: SNTP initialized. Waiting for synchronization...");
     }
     else
     {
-        // NOTE: Commented out to avoid invasive logging; uncomment for debug if needed.
-        // If already initialized, check if it's enabled. If not, re-init.
-        // This handles cases where sntp_stop() might have been called elsewhere.
+        ESP_LOGI(TAG, "NTP: SNTP already initialized. Verifying status...");
+
         if (!esp_sntp_enabled())
         {
-            ESP_LOGI(TAG, "NTP: SNTP was stopped. Re-initializing...");
-            esp_sntp_init(); // Re-initialize if it was stopped
-            } else {
-            ESP_LOGI(TAG, "NTP: SNTP already initialized and running. Checking status...");
+            ESP_LOGW(TAG, "NTP: SNTP was disabled. Re-initializing...");
+            esp_sntp_init();
+        }
+        else
+        {
+            ESP_LOGI(TAG, "NTP: SNTP is already running.");
         }
     }
-    
+
+    ESP_LOGI(TAG, "NTP: Checking sync status before waiting...");
+
     while (!sntp_sync_done)
     {
         ESP_LOGI(TAG, "NTP: Waiting for system time to be set...");
+        ESP_LOGI(TAG, "NTP: Current SNTP sync status: %d", sntp_get_sync_status());
         vTaskDelay(pdMS_TO_TICKS(NTP_RETRY_DELAY_MS));
     }
 
-    if (sntp_get_sync_status() == SNTP_SYNC_STATUS_COMPLETED)
+    if (sntp_sync_done && sntp_get_sync_status() == SNTP_SYNC_STATUS_COMPLETED)
     {
         ESP_LOGI(TAG, "NTP: Time synchronized successfully!");
 
-        // Optional: Log the synchronized time
+        // Log the synchronized time
         time_t now;
         struct tm timeinfo;
         char strftime_buf[64];
 
         time(&now);
-        // Set Timezone (Example: UTC, or find yours at https://github.com/nayarsystems/posix_tz_db/blob/master/zones.csv)
-        setenv("TZ", "UTC+3", 1); // For ARG
-        // setenv("TZ", "CET-1CEST,M3.5.0,M10.5.0/3", 1); // Example: Central European Time
-        tzset(); // Apply the timezone
+        setenv("TZ", "UTC+3", 1); // Set to your local timezone
+        tzset();
 
         localtime_r(&now, &timeinfo);
-        strftime(strftime_buf, sizeof(strftime_buf), "%c", &timeinfo); // Format: e.g., "Sat Nov  4 14:01:02 2023"
-        ESP_LOGI(TAG, "NTP: Current system time after sync: %s", strftime_buf);
+        strftime(strftime_buf, sizeof(strftime_buf), "%c", &timeinfo);
+        ESP_LOGI(TAG, "NTP: Current system time: %s", strftime_buf);
     }
     else
     {
-        ESP_LOGE(TAG, "NTP: Failed to synchronize time.");
-        ESP_LOGI(TAG, "NTP: Current sync status: %d (0:Reset, 1:Completed, 2:InProgress)", sntp_get_sync_status());
-        // sntp_stop(); // Optionally stop SNTP to free resources if sync fails persistently
-        sntp_initialized_flag = false; // If stopping, allow re-initialization
+        ESP_LOGE(TAG, "NTP: Time synchronization failed.");
+        ESP_LOGI(TAG, "NTP: Final SNTP sync status: %d (0:Reset, 1:Completed, 2:InProgress)", sntp_get_sync_status());
+        sntp_initialized_flag = false; // Allow reinit on next attempt
     }
 
-    // ESP_LOGI(TAG, "SNTP running: %s", esp_sntp_enabled() ? "yes" : "no");
-    // ESP_LOGI(TAG, "Server: %s", esp_sntp_getservername(0));
-
+    ESP_LOGI(TAG, "NTP: SNTP is currently %s", esp_sntp_enabled() ? "enabled" : "disabled");
+    ESP_LOGI(TAG, "NTP: Using server: %s", esp_sntp_getservername(0));
 }
 
 void init_device_mac()
 {
     uint8_t mac[6];
+    esp_read_mac(mac, ESP_MAC_WIFI_STA);
 
-    esp_read_mac(mac, ESP_MAC_WIFI_STA); // It could use ESP_MAC_BT
-
-    snprintf(DEVICE_MAC, sizeof(DEVICE_MAC), "%02X%02X%02X%02X%02X%02X",
-             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    for (int i = 0; i < 6; i++) {
+        DEVICE_MAC[i * 2]     = hex_chars[(mac[i] >> 4) & 0x0F];
+        DEVICE_MAC[i * 2 + 1] = hex_chars[mac[i] & 0x0F];
+    }
+    DEVICE_MAC[12] = '\0';  // Null-terminador
 }
+
 
 void get_current_utc_timestamp(char *timestamp, size_t max_len)
 {
@@ -528,21 +538,27 @@ void get_current_utc_timestamp(char *timestamp, size_t max_len)
              timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec, tv.tv_usec / 1000);
 }
 
-void IRAM_ATTR add_to_buffer(const char *mac, const char *rawData, const char *timestamp, int rssi) {
-    
-    if (buffer_count >= BUFFER_SIZE) {
-        // ESP_EARLY_LOGW(TAG, "Buffer lleno, descartando paquete");
-    } else { 
-        
-        // TODO :snprintf over memcpy?
-        snprintf(buffer[buffer_count].mac, sizeof(buffer[buffer_count].mac), "%s", mac);
-        snprintf(buffer[buffer_count].rawData, sizeof(buffer[buffer_count].rawData), "%s", rawData);
-        snprintf(buffer[buffer_count].timestamp, sizeof(buffer[buffer_count].timestamp), "%s", timestamp);
-        buffer[buffer_count].rssi = rssi;
-        
-        buffer_count++;
-    }
+void IRAM_ATTR add_to_buffer(const uint8_t *mac, const char *rawData, const char *timestamp, int rssi)
+{
+    if (buffer_count >= BUFFER_SIZE)
+        return;
+
+    ble_packet_t *pkt = &buffer[buffer_count];
+
+    memcpy(pkt->mac, mac, 6);
+
+    size_t raw_len = strnlen(rawData, sizeof(pkt->rawData) - 1);
+    memcpy(pkt->rawData, rawData, raw_len);
+    pkt->rawData[raw_len] = '\0';
+
+    size_t ts_len = strnlen(timestamp, sizeof(pkt->timestamp) - 1);
+    memcpy(pkt->timestamp, timestamp, ts_len);
+    pkt->timestamp[ts_len] = '\0';
+
+    pkt->rssi = rssi;
+    buffer_count++;
 }
+
 
 static inline char nibble_to_hex(uint8_t nibble) {
     return (nibble < 10) ? ('0' + nibble) : ('A' + nibble - 10);
@@ -558,15 +574,8 @@ static int IRAM_ATTR ble_scan_callback(struct ble_gap_event *event, void *arg)
     case BLE_GAP_EVENT_EXT_DISC:
     case BLE_GAP_EVENT_DISC:
     {
-
-        // TODO: What it need to scan? is everything useful?
-        // MAC, timestamp, RSSI, RAW: It need to have the same data than the other gateway
-        // Add monitor in JSON package
-
         if (event->disc.data == NULL || event->disc.addr.val[0] == 0)
-        {
             return 0;
-        }
 
         struct ble_hs_adv_fields fields;
         int rc = ble_hs_adv_parse_fields(&fields, event->disc.data, event->disc.length_data);
@@ -576,31 +585,23 @@ static int IRAM_ATTR ble_scan_callback(struct ble_gap_event *event, void *arg)
             return 0;
         }
 
-        char mac_str[18];
-        snprintf(mac_str, sizeof(mac_str), "%02X:%02X:%02X:%02X:%02X:%02X",
-                 event->disc.addr.val[5], event->disc.addr.val[4], event->disc.addr.val[3],
-                 event->disc.addr.val[2], event->disc.addr.val[1], event->disc.addr.val[0]);
-
-        char payload_hex[63];
-        int max_raw_bytes = (sizeof(payload_hex) - 1) / 2;
+        char payload_hex[100];  // rawData has 100 bytes max
+        int max_raw_bytes = sizeof(payload_hex) / 2 - 1; // 99/2 = 49 bytes máximo
         int raw_len = event->disc.length_data;
 
-        if (raw_len > 0 && raw_len <= max_raw_bytes) {
-            for (int i = 0; i < raw_len; i++) {
-                uint8_t byte = event->disc.data[i];
-                payload_hex[i * 2]     = nibble_to_hex(byte >> 4);
-                payload_hex[i * 2 + 1] = nibble_to_hex(byte & 0x0F);
-            }
-            payload_hex[raw_len * 2] = '\0';
-        } else {
-            strncpy(payload_hex, "No payload", sizeof(payload_hex) - 1);
-            payload_hex[sizeof(payload_hex) - 1] = '\0';
+        if (raw_len > max_raw_bytes) raw_len = max_raw_bytes;
+
+        for (int i = 0; i < raw_len; i++) {
+            uint8_t byte = event->disc.data[i];
+            payload_hex[i * 2]     = nibble_to_hex(byte >> 4);
+            payload_hex[i * 2 + 1] = nibble_to_hex(byte & 0x0F);
         }
+        payload_hex[raw_len * 2] = '\0';
 
         char timestamp[32];
         get_current_utc_timestamp(timestamp, sizeof(timestamp));
 
-        add_to_buffer(mac_str, payload_hex, timestamp, event->disc.rssi);
+        add_to_buffer(event->disc.addr.val, payload_hex, timestamp, event->disc.rssi);
         break;
     }
 
@@ -661,9 +662,9 @@ void app_main(void)
         get_device_uuid(DEVICE_MAC, DEVICE_TOKEN1, DEVICE_TYPE);
     }
 
-    ESP_ERROR_CHECK(update_config());
+    // ESP_ERROR_CHECK(update_config());
 
-    ntp_sync();
+    // ntp_sync();
 
     esp_nimble_hci_init();
     nimble_port_init();
