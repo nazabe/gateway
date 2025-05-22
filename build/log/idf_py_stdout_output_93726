@@ -1,0 +1,182 @@
+Command: /home/nazareno/.espressif/python_env/idf5.5_py3.12_env/bin/python /home/nazareno/esp/esp-idf/tools/idf_monitor.py -p /dev/ttyACM0 -b 115200 --toolchain-prefix xtensa-esp32s3-elf- --target esp32s3 --revision 0 /home/nazareno/espressif/gateway/build/gateway.elf /home/nazareno/espressif/gateway/build/bootloader/bootloader.elf -m '/home/nazareno/.espressif/python_env/idf5.5_py3.12_env/bin/python' '/home/nazareno/esp/esp-idf/tools/idf.py'
+ESP-ROM:esp32s3-20210327
+Build:Mar 27 2021
+rst:0x15 (USB_UART_CHIP_RESET),boot:0x2b (SPI_FAST_FLASH_BOOT)
+Saved PC:0x403cd824
+SPIWP:0xee
+mode:DIO, clock div:1
+load:0x3fce2820,len:0x15c8
+load:0x403c8700,len:0xd24
+load:0x403cb700,len:0x2f60
+entry 0x403c8924
+[0;32mI (24) boot: ESP-IDF v5.5-dev-2844-g5c51472e82 2nd stage bootloader[0m
+[0;32mI (25) boot: compile time May 16 2025 15:40:01[0m
+[0;32mI (25) boot: Multicore bootloader[0m
+[0;32mI (26) boot: chip revision: v0.2[0m
+[0;32mI (29) boot: efuse block revision: v1.3[0m
+[0;32mI (33) boot.esp32s3: Boot SPI Speed : 80MHz[0m
+[0;32mI (37) boot.esp32s3: SPI Mode       : DIO[0m
+[0;32mI (40) boot.esp32s3: SPI Flash Size : 16MB[0m
+[0;32mI (44) boot: Enabling RNG early entropy source...[0m
+[0;32mI (49) boot: Partition Table:[0m
+[0;32mI (51) boot: ## Label            Usage          Type ST Offset   Length[0m
+[0;32mI (58) boot:  0 nvs              WiFi data        01 02 00009000 00004000[0m
+[0;32mI (64) boot:  1 otadata          OTA data         01 00 0000d000 00002000[0m
+[0;32mI (71) boot:  2 phy_init         RF data          01 01 0000f000 00001000[0m
+[0;32mI (77) boot:  3 factory          factory app      00 00 00010000 0014b000[0m
+[0;32mI (84) boot:  4 ota_0            OTA app          00 10 00160000 0014b000[0m
+[0;32mI (90) boot:  5 ota_1            OTA app          00 11 002b0000 0014b000[0m
+[0;32mI (97) boot: End of partition table[0m
+[0;32mI (100) boot: Defaulting to factory image[0m
+[0;32mI (104) esp_image: segment 0: paddr=00010020 vaddr=3c0c0020 size=2adf8h (175608) map[0m
+[0;32mI (142) esp_image: segment 1: paddr=0003ae20 vaddr=3fc9ed00 size=051f8h ( 20984) load[0m
+[0;32mI (147) esp_image: segment 2: paddr=00040020 vaddr=42000020 size=b8540h (755008) map[0m
+[0;32mI (280) esp_image: segment 3: paddr=000f8568 vaddr=3fca3ef8 size=00160h (   352) load[0m
+[0;32mI (281) esp_image: segment 4: paddr=000f86d0 vaddr=40374000 size=1acdch (109788) load[0m
+[0;32mI (308) esp_image: segment 5: paddr=001133b4 vaddr=600fe000 size=0001ch (    28) load[0m
+[0;32mI (319) boot: Loaded app from partition at offset 0x10000[0m
+[0;32mI (319) boot: Disabling RNG early entropy source...[0m
+[0;32mI (330) cpu_start: Multicore app[0m
+[0;32mI (339) cpu_start: Pro cpu start user code[0m
+[0;32mI (339) cpu_start: cpu freq: 160000000 Hz[0m
+[0;32mI (339) app_init: Application information:[0m
+[0;32mI (339) app_init: Project name:     gateway[0m
+[0;32mI (343) app_init: App version:      a816148-dirty[0m
+[0;32mI (347) app_init: Compile time:     May 16 2025 15:39:44[0m
+[0;32mI (352) app_init: ELF file SHA256:  7db1b9bb4...[0m
+[0;32mI (356) app_init: ESP-IDF:          v5.5-dev-2844-g5c51472e82[0m
+[0;32mI (362) efuse_init: Min chip rev:     v0.0[0m
+[0;32mI (366) efuse_init: Max chip rev:     v0.99 [0m
+[0;32mI (370) efuse_init: Chip rev:         v0.2[0m
+[0;32mI (374) heap_init: Initializing. RAM available for dynamic allocation:[0m
+[0;32mI (380) heap_init: At 3FCBCF38 len 0002C7D8 (177 KiB): RAM[0m
+[0;32mI (385) heap_init: At 3FCE9710 len 00005724 (21 KiB): RAM[0m
+[0;32mI (390) heap_init: At 3FCF0000 len 00008000 (32 KiB): DRAM[0m
+[0;32mI (395) heap_init: At 600FE01C len 00001FCC (7 KiB): RTCRAM[0m
+[0;32mI (402) spi_flash: detected chip: gd[0m
+[0;32mI (404) spi_flash: flash io: dio[0m
+[0;32mI (407) sleep_gpio: Configure to isolate all GPIO pins in sleep state[0m
+[0;32mI (413) sleep_gpio: Enable automatic switching of GPIO sleep configuration[0m
+[0;32mI (420) coexist: coex firmware version: 88dafd1[0m
+[0;32mI (424) coexist: coexist rom version e7ae62f[0m
+[0;32mI (429) main_task: Started on CPU0[0m
+[0;32mI (439) main_task: Calling app_main()[0m
+[0;32mI (449) pp: pp rom version: e7ae62f[0m
+[0;32mI (449) net80211: net80211 rom version: e7ae62f[0m
+[0;32mI (459) wifi:wifi driver task: 3fcec7f8, prio:23, stack:6656, core=0[0m
+[0;32mI (459) wifi:wifi firmware version: 21fc8af6de[0m
+[0;32mI (459) wifi:wifi certification version: v7.0[0m
+[0;32mI (459) wifi:config NVS flash: enabled[0m
+[0;32mI (469) wifi:config nano formatting: disabled[0m
+[0;32mI (469) wifi:Init data frame dynamic rx buffer num: 32[0m
+[0;32mI (469) wifi:Init static rx mgmt buffer num: 5[0m
+[0;32mI (479) wifi:Init management short buffer num: 32[0m
+[0;32mI (479) wifi:Init dynamic tx buffer num: 32[0m
+[0;32mI (489) wifi:Init static tx FG buffer num: 2[0m
+[0;32mI (489) wifi:Init static rx buffer size: 1600[0m
+[0;32mI (489) wifi:Init static rx buffer num: 10[0m
+[0;32mI (499) wifi:Init dynamic rx buffer num: 32[0m
+[0;32mI (499) wifi_init: rx ba win: 6[0m
+[0;32mI (509) wifi_init: accept mbox: 6[0m
+[0;32mI (509) wifi_init: tcpip mbox: 32[0m
+[0;32mI (509) wifi_init: udp mbox: 6[0m
+[0;32mI (509) wifi_init: tcp mbox: 6[0m
+[0;32mI (519) wifi_init: tcp tx win: 5760[0m
+[0;32mI (519) wifi_init: tcp rx win: 5760[0m
+[0;32mI (519) wifi_init: tcp mss: 1440[0m
+[0;32mI (529) wifi_init: WiFi IRAM OP enabled[0m
+[0;32mI (529) wifi_init: WiFi RX IRAM OP enabled[0m
+[0;32mI (539) wifi_manager: AP password: esp32pwd[0m
+[0;32mI (539) wifi_manager: Set STA IP String to: 0.0.0.0[0m
+[0;32mI (639) phy_init: phy_version 701,f4f1da3a,Mar  3 2025,15:50:10[0m
+[0;32mI (679) wifi_manager: [0m
+[0;32mI (679) http_server: Registering URI handlers[0m
+[0;32mI (679) wifi_manager: MESSAGE: ORDER_LOAD_AND_RESTORE_STA[0m
+[0;32mI (679) wifi_manager: wifi_manager_fetch_wifi_sta_config: ssid:UNNE-Invitado password:Inv2025Wlc[0m
+[0;32mI (679) wifi_manager: Saved wifi found on startup. Will attempt to connect.[0m
+[0;32mI (689) wifi_manager: MESSAGE: ORDER_CONNECT_STA[0m
+[0;32mI (1379) wifi_manager: WIFI_EVENT_STA_CONNECTED[0m
+[0;32mI (1679) main: NTP: Starting synchronization process...[0m
+[0;32mI (1679) main: NTP: SNTP not initialized. Initializing now...[0m
+[0;32mI (1679) main: NTP: Configured server: time.google.com[0m
+[0;32mI (1679) main: NTP: SNTP initialized. Waiting for synchronization...[0m
+[0;32mI (1689) main: NTP: Checking sync status before waiting...[0m
+[0;32mI (1689) main: NTP: Initial SNTP sync status: 0 (0:Reset, 1:Completed, 2:InProgress)[0m
+[0;32mI (1699) main: NTP: Waiting for system time to be set...[0m
+[0;32mI (1699) main: NTP: Current SNTP sync status: 0[0m
+[0;32mI (2709) main: NTP: Waiting for system time to be set...[0m
+[0;32mI (2709) main: NTP: Current SNTP sync status: 0[0m
+[0;32mI (3069) esp_netif_handlers: sta ip: 10.60.151.137, mask: 255.255.254.0, gw: 10.60.150.1[0m
+[0;32mI (3069) wifi_manager: IP_EVENT_STA_GOT_IP[0m
+[0;32mI (3069) wifi_manager: WM_EVENT_STA_GOT_IP[0m
+[0;32mI (3069) wifi_manager: Set STA IP String to: 10.60.151.137[0m
+[0;32mI (3709) main: NTP: Waiting for system time to be set...[0m
+[0;32mI (3709) main: NTP: Current SNTP sync status: 0[0m
+[0;32mI (4709) main: NTP: Waiting for system time to be set...[0m
+[0;32mI (4709) main: NTP: Current SNTP sync status: 0[0m
+[0;32mI (5709) main: NTP: Waiting for system time to be set...[0m
+[0;32mI (5709) main: NTP: Current SNTP sync status: 0[0m
+[0;32mI (6709) main: NTP: Waiting for system time to be set...[0m
+[0;32mI (6709) main: NTP: Current SNTP sync status: 0[0m
+[0;32mI (7709) main: NTP: Waiting for system time to be set...[0m
+[0;32mI (7709) main: NTP: Current SNTP sync status: 0[0m
+[0;32mI (8709) main: NTP: Waiting for system time to be set...[0m
+[0;32mI (8709) main: NTP: Current SNTP sync status: 0[0m
+[0;32mI (9709) main: NTP: Waiting for system time to be set...[0m
+[0;32mI (9709) main: NTP: Current SNTP sync status: 0[0m
+[0;32mI (10709) main: NTP: Waiting for system time to be set...[0m
+[0;32mI (10709) main: NTP: Current SNTP sync status: 0[0m
+[0;32mI (11709) main: NTP: Waiting for system time to be set...[0m
+[0;32mI (11709) main: NTP: Current SNTP sync status: 0[0m
+[0;32mI (12709) main: NTP: Waiting for system time to be set...[0m
+[0;32mI (12709) main: NTP: Current SNTP sync status: 0[0m
+[0;32mI (13709) main: NTP: Waiting for system time to be set...[0m
+[0;32mI (13709) main: NTP: Current SNTP sync status: 0[0m
+[0;32mI (14709) main: NTP: Waiting for system time to be set...[0m
+[0;32mI (14709) main: NTP: Current SNTP sync status: 0[0m
+[0;32mI (15709) main: NTP: Waiting for system time to be set...[0m
+[0;32mI (15709) main: NTP: Current SNTP sync status: 0[0m
+[0;32mI (16709) main: NTP: Waiting for system time to be set...[0m
+[0;32mI (16709) main: NTP: Current SNTP sync status: 0[0m
+[0;32mI (17709) main: NTP: Waiting for system time to be set...[0m
+[0;32mI (17709) main: NTP: Current SNTP sync status: 0[0m
+[0;32mI (18709) main: NTP: Waiting for system time to be set...[0m
+[0;32mI (18709) main: NTP: Current SNTP sync status: 0[0m
+[0;32mI (19709) main: NTP: Waiting for system time to be set...[0m
+[0;32mI (19709) main: NTP: Current SNTP sync status: 0[0m
+[0;32mI (20709) main: NTP: Waiting for system time to be set...[0m
+[0;32mI (20709) main: NTP: Current SNTP sync status: 0[0m
+[0;32mI (21709) main: NTP: Waiting for system time to be set...[0m
+[0;32mI (21709) main: NTP: Current SNTP sync status: 0[0m
+[0;32mI (22709) main: NTP: Waiting for system time to be set...[0m
+[0;32mI (22709) main: NTP: Current SNTP sync status: 0[0m
+[0;32mI (23709) main: NTP: Waiting for system time to be set...[0m
+[0;32mI (23709) main: NTP: Current SNTP sync status: 0[0m
+[0;32mI (24709) main: NTP: Waiting for system time to be set...[0m
+[0;32mI (24709) main: NTP: Current SNTP sync status: 0[0m
+[0;32mI (25709) main: NTP: Waiting for system time to be set...[0m
+[0;32mI (25709) main: NTP: Current SNTP sync status: 0[0m
+[0;32mI (26709) main: NTP: Waiting for system time to be set...[0m
+[0;32mI (26709) main: NTP: Current SNTP sync status: 0[0m
+[0;32mI (27709) main: NTP: Waiting for system time to be set...[0m
+[0;32mI (27709) main: NTP: Current SNTP sync status: 0[0m
+[0;32mI (28709) main: NTP: Waiting for system time to be set...[0m
+[0;32mI (28709) main: NTP: Current SNTP sync status: 0[0m
+[0;32mI (29709) main: NTP: Waiting for system time to be set...[0m
+[0;32mI (29709) main: NTP: Current SNTP sync status: 0[0m
+[0;32mI (30709) main: NTP: Waiting for system time to be set...[0m
+[0;32mI (30709) main: NTP: Current SNTP sync status: 0[0m
+[0;32mI (31709) main: NTP: Waiting for system time to be set...[0m
+[0;32mI (31709) main: NTP: Current SNTP sync status: 0[0m
+[0;32mI (32709) main: NTP: Waiting for system time to be set...[0m
+[0;32mI (32709) main: NTP: Current SNTP sync status: 0[0m
+[0;32mI (33709) main: NTP: Waiting for system time to be set...[0m
+[0;32mI (33709) main: NTP: Current SNTP sync status: 0[0m
+[0;32mI (34709) main: NTP: Waiting for system time to be set...[0m
+[0;32mI (34709) main: NTP: Current SNTP sync status: 0[0m
+[0;32mI (35709) main: NTP: Waiting for system time to be set...[0m
+[0;32mI (35709) main: NTP: Current SNTP sync status: 0[0m
+[0;32mI (36709) main: NTP: Waiting for system time to be set...[0m
+[0;32mI (36709) main: NTP: Current SNTP sync status: 0[0m
+[0;32mI (37709) main: NTP: Waiting for system time to be set...[0m
+[0;32mI (37709) main: NTP: Current SNTP sync status: 0[0m

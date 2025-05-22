@@ -1,0 +1,2 @@
+source /home/nazareno/espressif/gateway/build/bootloader/gdbinit/symbols
+source /home/nazareno/espressif/gateway/build/bootloader/gdbinit/connect
