@@ -39,6 +39,11 @@
 #include "esp_http_client.h"
 #include "cJSON.h"
 
+// OTA
+#include "esp_ota_ops.h"
+#include "esp_http_client.h"
+#include "esp_https_ota.h"
+
 // Other components
 #include "wifi_manager.h"
 #include "secrets.h"
@@ -110,7 +115,7 @@ static volatile bool sntp_sync_done = false;
 
 typedef struct
 {
-    uint8_t mac[6];           // "XX:XX:XX:XX:XX:XX" + null. TODO: it can be 6 bytes
+    uint8_t mac[6];         // "XX:XX:XX:XX:XX:XX" + null. TODO: it can be 6 bytes
     int rssi;               // integer value, normally negative
     char rawData[100];      // 31 * 2 = 62 bytes → 124 chars + \0 = 125 bytes
     char timestamp[32];     // Time (ej. ISO 8601) TODO: uint64, timestamp 32 its a lot, unt64 its enough
@@ -121,6 +126,17 @@ static int buffer_count = 0;
 static ble_packet_t buffer[BUFFER_SIZE];
 
 static const char hex_chars[] = "0123456789ABCDEF";
+
+TaskHandle_t ota_handle = NULL;
+
+#define MAX_FILE_LEN (1300 * 1024)  // OTA Image
+#define OTA_RETRY_DELAY 15 * 1000 
+
+uint32_t file_len = 0;
+uint32_t sum = 0;
+static int last_log_percent = -5;
+
+static bool do_ota = false;
 
 static const char *json_str = NULL;
 static const char TAG[] = "main";
@@ -147,6 +163,8 @@ int get_device_uuid(char *DEVICE_MAC, char *DEVICE_TYPE, char *DEVICE_TOKEN1)
     esp_err_t err = esp_wifi_get_config(WIFI_IF_STA, &wifi_config);
 
     char request_data[256];
+
+    // TODO: Replace per memcpy
     snprintf(request_data, sizeof(request_data),
              "{\"device_mac\":\"%s\",\"device_type\":\"%s\",\"device_token\":\"%s\",\"wifi_ssid\":\"%s\",\"wifi_password\":\"%s\"}",
              DEVICE_MAC, DEVICE_TYPE, DEVICE_TOKEN1, wifi_config.sta.ssid, wifi_config.sta.password);
@@ -361,24 +379,43 @@ esp_err_t http_event_handler(esp_http_client_event_t *evt)
         break;
 
     case HTTP_EVENT_ON_HEADER:
-        // NOTE: Commented out to avoid invasive logging; uncomment for debug if needed.
-        // ESP_LOGD(TAG, "HTTP_EVENT_ON_HEADER, key=%s, value=%s", evt->header_key, evt->header_value);
+    if (evt->header_key && strcmp(evt->header_key, "size") == 0) {
+        file_len = strtol(evt->header_value, NULL, 10);
+        if (file_len > 0 && file_len < MAX_FILE_LEN) {
+            ESP_LOGI(TAG, "Set len: %lu bytes", (uint32_t)file_len);
+        } else {
+            ESP_LOGW(TAG, "Invalid or too large file_len: %ld", file_len);
+            file_len = 0;
+        }
+    }
         break;
 
     case HTTP_EVENT_ON_DATA:
         if (esp_http_client_is_chunked_response(evt->client))
             break;
 
-        if (evt->data && (response_len + evt->data_len <= MAX_HTTP_RESPONSE_SIZE))
-        {
-            memcpy(http_response_buffer + response_len, evt->data, evt->data_len);
-            response_len += evt->data_len;
-            http_response_buffer[response_len] = '\0';
+        if (evt->data) {
+            if (response_len + evt->data_len <= MAX_HTTP_RESPONSE_SIZE)
+            {
+                memcpy(http_response_buffer + response_len, evt->data, evt->data_len);
+                response_len += evt->data_len;
+                http_response_buffer[response_len] = '\0';
+            }
+            else
+            {
+                ESP_LOGW(TAG, "HTTP response buffer overflow or null data");
+                http_response_buffer[MAX_HTTP_RESPONSE_SIZE - 1] = '\0';
+            }
         }
-        else
-        {
-            ESP_LOGW(TAG, "HTTP response buffer overflow or null data");
-            http_response_buffer[MAX_HTTP_RESPONSE_SIZE] = '\0';
+
+        if (file_len > 0) {
+            sum += evt->data_len;
+            int percent = (int)(sum * 100 / file_len);
+
+            if (percent != last_log_percent && percent % 5 == 0) {
+                ESP_LOGI(TAG, "Progress: %lu/%lu bytes (%d%%)", sum, file_len, percent);
+                last_log_percent = percent;
+            }
         }
         break;
 
@@ -391,12 +428,16 @@ esp_err_t http_event_handler(esp_http_client_event_t *evt)
             output_buffer = NULL;
             response_len = 0;
         }
+        sum = 0;
+        last_log_percent = -1;
         break;
 
     case HTTP_EVENT_DISCONNECTED:
         free(output_buffer);
         output_buffer = NULL;
         response_len = 0;
+        sum = 0;
+        last_log_percent = -1;
         break;
 
     default:
@@ -631,8 +672,65 @@ void ble_app_scan(void)
     ble_gap_disc(0, scan_timeout, &disc_params, ble_scan_callback, NULL);
 }
 
+void ota_task(void *pvParameter)
+{
+    ESP_LOGI(TAG, "OTA task started");
+
+    const esp_http_client_config_t config = {
+        .url = OTA_URL,
+        .crt_bundle_attach = esp_crt_bundle_attach,
+        .skip_cert_common_name_check = true,
+    };
+
+    const esp_https_ota_config_t ota_config = {
+        .http_config = &config,
+    };
+
+    while (true)
+    {
+        if (!do_ota) {
+            vTaskDelay(pdMS_TO_TICKS(OTA_RETRY_DELAY));
+            continue;
+        }
+
+        ESP_LOGI(TAG, "Starting OTA...");
+
+        esp_err_t ret = esp_https_ota(&ota_config);
+
+        UBaseType_t watermark = uxTaskGetStackHighWaterMark(NULL);
+        ESP_LOGI(TAG, "Stack high water mark: %lu words (%lu bytes)", watermark, watermark * sizeof(StackType_t));
+
+        if (ret == ESP_OK)
+        {
+            ESP_LOGI(TAG, "OTA success, restarting...");
+            esp_restart();
+        }
+        else
+        {
+            ESP_LOGE(TAG, "OTA failed: %s", esp_err_to_name(ret));
+        }
+
+        do_ota = false; // Reset the flag
+
+        vTaskDelay(pdMS_TO_TICKS(10000)); // Prevent hammering the server on repeated failure
+    }
+}
+
+void task_monitor(void *pvParameter){
+    while (true) {
+        if (ota_handle != NULL) {
+            UBaseType_t wm = uxTaskGetStackHighWaterMark(ota_handle);
+            ESP_LOGI(TAG, "OTA watermark: %lu palabras", wm);
+        }
+        vTaskDelay(pdMS_TO_TICKS(5000));
+        do_ota = true;
+    }
+}
+
+
 void app_main(void)
 {
+    esp_log_level_set("*", ESP_LOG_INFO);
 
     init_device_mac();
 
@@ -662,12 +760,16 @@ void app_main(void)
         get_device_uuid(DEVICE_MAC, DEVICE_TOKEN1, DEVICE_TYPE);
     }
 
-    // ESP_ERROR_CHECK(update_config());
+    ESP_ERROR_CHECK(update_config());
 
-    // ntp_sync();
+    ntp_sync();
 
     esp_nimble_hci_init();
     nimble_port_init();
 
     ble_hs_cfg.sync_cb = ble_app_scan;
+
+    xTaskCreatePinnedToCore(ota_task, "OTA", 8192, NULL, 7, &ota_handle, tskNO_AFFINITY);
+    xTaskCreatePinnedToCore(task_monitor, "MONITOR", 1024, NULL, 7, NULL, tskNO_AFFINITY);
+
 }
