@@ -1,0 +1,12 @@
+Command: /home/nazareno/.espressif/python_env/idf5.5_py3.12_env/bin/python /home/nazareno/esp/esp-idf/tools/idf_monitor.py -p /dev/ttyACM0 -b 115200 --toolchain-prefix xtensa-esp32s3-elf- --target esp32s3 --revision 0 /home/nazareno/espressif/gateway/build/gateway.elf /home/nazareno/espressif/gateway/build/bootloader/bootloader.elf -m '/home/nazareno/.espressif/python_env/idf5.5_py3.12_env/bin/python' '/home/nazareno/esp/esp-idf/tools/idf.py'
+[0;33m--- esp-idf-monitor 1.6.2 on /dev/ttyACM0 115200[0m
+[0;33m--- Quit: Ctrl+] | Menu: Ctrl+T | Help: Ctrl+T followed by Ctrl+H[0m
+[0;33m--- 0x403cd7ef: process_segment_data at /home/nazareno/esp/esp-idf/components/bootloader_support/src/esp_image_format.c:750
+---  (inlined by) process_segment at /home/nazareno/esp/esp-idf/components/bootloader_support/src/esp_image_format.c:629
+---  (inlined by) process_segments at /home/nazareno/esp/esp-idf/components/bootloader_support/src/esp_image_format.c:541
+[0m
+[0;33m--- 0x403c8700: _stext at ??:?
+[0m
+[0;33m--- 0x403c8924: call_start_cpu0 at /home/nazareno/esp/esp-idf/components/bootloader/subproject/main/bootloader_start.c:25
+[0m
+[0m

@@ -1,7 +1,7 @@
 {
     "version":            "1.2",
     "project_name":       "gateway",
-    "project_version":    "cb31198-dirty",
+    "project_version":    "f63525e-dirty",
     "project_path":       "/home/nazareno/espressif/gateway",
     "idf_path":           "/home/nazareno/esp/esp-idf",
     "build_dir":          "/home/nazareno/espressif/gateway/build",

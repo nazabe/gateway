@@ -136,7 +136,7 @@ uint32_t file_len = 0;
 uint32_t sum = 0;
 static int last_log_percent = -5;
 
-static bool do_ota = false;
+volatile bool do_ota = false;
 
 static const char *json_str = NULL;
 static const char TAG[] = "main";
@@ -627,7 +627,7 @@ static int IRAM_ATTR ble_scan_callback(struct ble_gap_event *event, void *arg)
         }
 
         char payload_hex[100];  // rawData has 100 bytes max
-        int max_raw_bytes = sizeof(payload_hex) / 2 - 1; // 99/2 = 49 bytes máximo
+        int max_raw_bytes = sizeof(payload_hex) / 2 - 1; // 99/2 = 49 max bytes
         int raw_len = event->disc.length_data;
 
         if (raw_len > max_raw_bytes) raw_len = max_raw_bytes;
@@ -686,9 +686,17 @@ void ota_task(void *pvParameter)
         .http_config = &config,
     };
 
-    while (true)
+    // NOTE: This is only for debug
+    // vTaskDelay(pdMS_TO_TICKS(10000));
+    // do_ota = true;
+
+    while (1)
     {
+        vTaskDelay(pdMS_TO_TICKS(10000)); // Prevent hammering the server on repeated failure
+
+        // TODO: This flag need to be set via MQTT
         if (!do_ota) {
+            ESP_LOGI(TAG, "do_ota is false, waiting...");
             vTaskDelay(pdMS_TO_TICKS(OTA_RETRY_DELAY));
             continue;
         }
@@ -723,15 +731,11 @@ void task_monitor(void *pvParameter){
             ESP_LOGI(TAG, "OTA watermark: %lu palabras", wm);
         }
         vTaskDelay(pdMS_TO_TICKS(5000));
-        do_ota = true;
     }
 }
 
-
 void app_main(void)
 {
-    esp_log_level_set("*", ESP_LOG_INFO);
-
     init_device_mac();
 
     esp_err_t err = nvs_flash_init();
@@ -769,7 +773,6 @@ void app_main(void)
 
     ble_hs_cfg.sync_cb = ble_app_scan;
 
-    xTaskCreatePinnedToCore(ota_task, "OTA", 8192, NULL, 7, &ota_handle, tskNO_AFFINITY);
-    xTaskCreatePinnedToCore(task_monitor, "MONITOR", 1024, NULL, 7, NULL, tskNO_AFFINITY);
+    xTaskCreatePinnedToCore(ota_task, "OTA", 4096, NULL, 7, &ota_handle, tskNO_AFFINITY);
 
 }
