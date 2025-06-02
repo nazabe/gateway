@@ -53,7 +53,6 @@
 #define MAX_FILTER_LIST_SIZE 10
 #define MAX_MAC_LEN 18
 
-#define BUFFER_SIZE 500
 #define CLEAN_INTERVAL_MS 5000
 
 #define WIFI_SSID_MAX_LEN 32
@@ -107,7 +106,6 @@ static char http_response_buffer[MAX_HTTP_BUFFER_SIZE];
 
 // Configuration for NTP
 #define NTP_SERVER_HOSTNAME "time.google.com" // "pool.ntp.org"
-#define NTP_MAX_RETRIES 5
 #define NTP_RETRY_DELAY_MS 1000
 
 static bool sntp_initialized_flag = false;
@@ -115,22 +113,21 @@ static volatile bool sntp_sync_done = false;
 
 typedef struct
 {
-    uint8_t mac[6];         // "XX:XX:XX:XX:XX:XX" + null. TODO: it can be 6 bytes
-    int rssi;               // integer value, normally negative
-    char rawData[100];      // 31 * 2 = 62 bytes → 124 chars + \0 = 125 bytes
-    char timestamp[32];     // Time (ej. ISO 8601) TODO: uint64, timestamp 32 its a lot, unt64 its enough
-} ble_packet_t;
+    uint8_t mac[6];      // "XX:XX:XX:XX:XX:XX" + null. TODO: it can be 6 bytes
+    int8_t rssi;         // integer value, normally negative
+    uint8_t raw_adv[31]; // 31 * 2 = 62 bytes → 124 chars + \0 = 125 bytes
+    uint8_t raw_len;
+    uint64_t timestamp_ms; // Time (ej. ISO 8601) TODO: uint64, timestamp 32 its a lot, unt64 its enough
+} ble_packet_raw_t;
 
-static int buffer_count = 0;
-#define BUFFER_SIZE 500
-static ble_packet_t buffer[BUFFER_SIZE];
+#define QUEUE_SIZE 25
+
+QueueHandle_t ble_queue;
 
 static const char hex_chars[] = "0123456789ABCDEF";
 
-TaskHandle_t ota_handle = NULL;
-
-#define MAX_FILE_LEN (1300 * 1024)  // OTA Image
-#define OTA_RETRY_DELAY 15 * 1000 
+#define MAX_FILE_LEN (1300 * 1024) // OTA Image
+#define OTA_RETRY_DELAY 15 * 1000
 
 uint32_t file_len = 0;
 uint32_t sum = 0;
@@ -379,22 +376,27 @@ esp_err_t http_event_handler(esp_http_client_event_t *evt)
         break;
 
     case HTTP_EVENT_ON_HEADER:
-    if (evt->header_key && strcmp(evt->header_key, "size") == 0) {
-        file_len = strtol(evt->header_value, NULL, 10);
-        if (file_len > 0 && file_len < MAX_FILE_LEN) {
-            ESP_LOGI(TAG, "Set len: %lu bytes", (uint32_t)file_len);
-        } else {
-            ESP_LOGW(TAG, "Invalid or too large file_len: %ld", file_len);
-            file_len = 0;
+        if (evt->header_key && strcmp(evt->header_key, "size") == 0)
+        {
+            file_len = strtol(evt->header_value, NULL, 10);
+            if (file_len > 0 && file_len < MAX_FILE_LEN)
+            {
+                ESP_LOGI(TAG, "Set len: %lu bytes", (uint32_t)file_len);
+            }
+            else
+            {
+                ESP_LOGW(TAG, "Invalid or too large file_len: %ld", file_len);
+                file_len = 0;
+            }
         }
-    }
         break;
 
     case HTTP_EVENT_ON_DATA:
         if (esp_http_client_is_chunked_response(evt->client))
             break;
 
-        if (evt->data) {
+        if (evt->data)
+        {
             if (response_len + evt->data_len <= MAX_HTTP_RESPONSE_SIZE)
             {
                 memcpy(http_response_buffer + response_len, evt->data, evt->data_len);
@@ -408,11 +410,13 @@ esp_err_t http_event_handler(esp_http_client_event_t *evt)
             }
         }
 
-        if (file_len > 0) {
+        if (file_len > 0)
+        {
             sum += evt->data_len;
             int percent = (int)(sum * 100 / file_len);
 
-            if (percent != last_log_percent && percent % 5 == 0) {
+            if (percent != last_log_percent && percent % 5 == 0)
+            {
                 ESP_LOGI(TAG, "Progress: %lu/%lu bytes (%d%%)", sum, file_len, percent);
                 last_log_percent = percent;
             }
@@ -480,7 +484,7 @@ void ntp_sync(void)
 
         esp_sntp_setoperatingmode(SNTP_OPMODE_POLL);
         esp_sntp_setservername(0, NTP_SERVER_HOSTNAME);
-        // esp_sntp_setservername(0, "216.239.35.0"); // Use IP if DNS fails
+        // esp_sntp_setservername(0, "216.239.35.0"); // NOTE: Use IP if DNS fails
 
         ESP_LOGI(TAG, "NTP: Configured server: %s", esp_sntp_getservername(0));
         esp_sntp_set_time_sync_notification_cb(time_sync_notification_cb);
@@ -546,66 +550,20 @@ void init_device_mac()
     uint8_t mac[6];
     esp_read_mac(mac, ESP_MAC_WIFI_STA);
 
-    for (int i = 0; i < 6; i++) {
-        DEVICE_MAC[i * 2]     = hex_chars[(mac[i] >> 4) & 0x0F];
+    for (int i = 0; i < 6; i++)
+    {
+        DEVICE_MAC[i * 2] = hex_chars[(mac[i] >> 4) & 0x0F];
         DEVICE_MAC[i * 2 + 1] = hex_chars[mac[i] & 0x0F];
     }
-    DEVICE_MAC[12] = '\0';  // Null-terminador
+    DEVICE_MAC[12] = '\0'; // Null-terminador
 }
 
-
-void get_current_utc_timestamp(char *timestamp, size_t max_len)
+static inline char nibble_to_hex(uint8_t nibble)
 {
-    struct timeval tv;
-    if (gettimeofday(&tv, NULL) != 0)
-    {
-        ESP_LOGE(TAG, "Failed to get current time");
-        snprintf(timestamp, max_len, "N/A");
-        return;
-    }
-
-    struct tm timeinfo;
-    // if (gmtime_r(&tv.tv_sec, &timeinfo) == NULL)
-    if (localtime_r(&tv.tv_sec, &timeinfo) == NULL)
-    {
-        ESP_LOGE(TAG, "Failed to convert time to UTC");
-        snprintf(timestamp, max_len, "N/A");
-        return;
-    }
-
-    // Format timestamp in ISO 8601 format
-    snprintf(timestamp, max_len, "%04d-%02d-%02dT%02d:%02d:%02d.%03ld",
-             timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday,
-             timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec, tv.tv_usec / 1000);
-}
-
-void IRAM_ATTR add_to_buffer(const uint8_t *mac, const char *rawData, const char *timestamp, int rssi)
-{
-    if (buffer_count >= BUFFER_SIZE)
-        return;
-
-    ble_packet_t *pkt = &buffer[buffer_count];
-
-    memcpy(pkt->mac, mac, 6);
-
-    size_t raw_len = strnlen(rawData, sizeof(pkt->rawData) - 1);
-    memcpy(pkt->rawData, rawData, raw_len);
-    pkt->rawData[raw_len] = '\0';
-
-    size_t ts_len = strnlen(timestamp, sizeof(pkt->timestamp) - 1);
-    memcpy(pkt->timestamp, timestamp, ts_len);
-    pkt->timestamp[ts_len] = '\0';
-
-    pkt->rssi = rssi;
-    buffer_count++;
-}
-
-
-static inline char nibble_to_hex(uint8_t nibble) {
     return (nibble < 10) ? ('0' + nibble) : ('A' + nibble - 10);
 }
 
-static int IRAM_ATTR ble_scan_callback(struct ble_gap_event *event, void *arg)
+static int ble_scan_callback(struct ble_gap_event *event, void *arg)
 {
     // REFERENCE:
     // https://github.com/espressif/esp-idf/blob/master/examples/bluetooth/nimble/blecent/tutorial/blecent_walkthrough.md
@@ -626,23 +584,19 @@ static int IRAM_ATTR ble_scan_callback(struct ble_gap_event *event, void *arg)
             return 0;
         }
 
-        char payload_hex[100];  // rawData has 100 bytes max
-        int max_raw_bytes = sizeof(payload_hex) / 2 - 1; // 99/2 = 49 max bytes
-        int raw_len = event->disc.length_data;
+        ble_packet_raw_t pkt = {0};
 
-        if (raw_len > max_raw_bytes) raw_len = max_raw_bytes;
+        memcpy(pkt.mac, event->disc.addr.val, 6);
+        pkt.rssi = event->disc.rssi;
 
-        for (int i = 0; i < raw_len; i++) {
-            uint8_t byte = event->disc.data[i];
-            payload_hex[i * 2]     = nibble_to_hex(byte >> 4);
-            payload_hex[i * 2 + 1] = nibble_to_hex(byte & 0x0F);
-        }
-        payload_hex[raw_len * 2] = '\0';
+        pkt.raw_len = event->disc.length_data > sizeof(pkt.raw_adv) ? sizeof(pkt.raw_adv) : event->disc.length_data;
+        memcpy(pkt.raw_adv, event->disc.data, pkt.raw_len);
 
-        char timestamp[32];
-        get_current_utc_timestamp(timestamp, sizeof(timestamp));
+        struct timeval tv;
+        gettimeofday(&tv, NULL);
+        pkt.timestamp_ms = (uint64_t)tv.tv_sec * 1000 + tv.tv_usec / 1000;
 
-        add_to_buffer(event->disc.addr.val, payload_hex, timestamp, event->disc.rssi);
+        xQueueSend(ble_queue, &pkt, 0);
         break;
     }
 
@@ -692,11 +646,10 @@ void ota_task(void *pvParameter)
 
     while (1)
     {
-        vTaskDelay(pdMS_TO_TICKS(10000)); // Prevent hammering the server on repeated failure
-
         // TODO: This flag need to be set via MQTT
-        if (!do_ota) {
-            ESP_LOGI(TAG, "do_ota is false, waiting...");
+        if (!do_ota)
+        {
+            // ESP_LOGI(TAG, "do_ota is false, waiting...");
             vTaskDelay(pdMS_TO_TICKS(OTA_RETRY_DELAY));
             continue;
         }
@@ -724,13 +677,94 @@ void ota_task(void *pvParameter)
     }
 }
 
-void task_monitor(void *pvParameter){
-    while (true) {
-        if (ota_handle != NULL) {
-            UBaseType_t wm = uxTaskGetStackHighWaterMark(ota_handle);
-            ESP_LOGI(TAG, "OTA watermark: %lu palabras", wm);
+void ble_host_task(void *param)
+{
+    nimble_port_run();
+    nimble_port_freertos_deinit();
+}
+
+static void ble_json_task(void *param)
+{
+    ble_packet_raw_t pkt, buffer[QUEUE_SIZE];
+    int count = 0;
+
+    while (1)
+    {
+        // Try to receive from queue with timeout
+        if (xQueueReceive(ble_queue, &pkt, pdMS_TO_TICKS(CLEAN_INTERVAL_MS)) == pdTRUE)
+        {
+            if (count < QUEUE_SIZE)
+                buffer[count++] = pkt;
         }
-        vTaskDelay(pdMS_TO_TICKS(5000));
+        else if (count == 0)
+        {
+            // Timeout with no data → wait again
+            continue;
+        }
+
+        if (count < QUEUE_SIZE)
+            continue;
+
+        cJSON *root = cJSON_CreateObject(), *arr = cJSON_CreateArray();
+        if (!root || !arr)
+        {
+            ESP_LOGE(TAG, "Failed to create JSON object/array");
+            if (root)
+                cJSON_Delete(root);
+            count = 0;
+            continue;
+        }
+
+        cJSON_AddItemToObject(root, "devices", arr);
+
+        for (int i = 0; i < count; i++)
+        {
+            cJSON *entry = cJSON_CreateObject();
+            if (!entry)
+            {
+                ESP_LOGW(TAG, "Failed to create JSON entry");
+                continue;
+            }
+
+            char mac[18], raw[63] = {0}, timestamp[40];
+            snprintf(mac, sizeof(mac), "%02X%02X%02X%02X%02X%02X",
+                     buffer[i].mac[0], buffer[i].mac[1], buffer[i].mac[2],
+                     buffer[i].mac[3], buffer[i].mac[4], buffer[i].mac[5]);
+
+            int len = buffer[i].raw_len > 31 ? 31 : buffer[i].raw_len;
+            for (int j = 0; j < len; j++)
+                snprintf(raw + j * 2, 3, "%02X", buffer[i].raw_adv[j]);
+
+            time_t sec = buffer[i].timestamp_ms / 1000;
+            int ms = buffer[i].timestamp_ms % 1000;
+            struct tm t;
+            localtime_r(&sec, &t);
+            snprintf(timestamp, sizeof(timestamp), "%04d-%02d-%02dT%02d:%02d:%02d.%03d",
+            t.tm_year + 1900, t.tm_mon + 1, t.tm_mday,
+            t.tm_hour, t.tm_min, t.tm_sec, ms);
+
+            cJSON_AddStringToObject(entry, "mac", mac);
+            cJSON_AddNumberToObject(entry, "rssi", buffer[i].rssi);
+            cJSON_AddStringToObject(entry, "timestamp", timestamp);
+            cJSON_AddStringToObject(entry, "raw", raw);
+            cJSON_AddItemToArray(arr, entry);
+        }
+
+        char *json = cJSON_PrintUnformatted(root);
+        if (json)
+        {
+            // send_json_via_mqtt(json);
+            ESP_LOGI(TAG, "JSON: %s", json);
+            free(json);
+        }
+        else
+        {
+            ESP_LOGE(TAG, "Failed to convert JSON to string");
+        }
+
+        cJSON_Delete(root);
+        count = 0;
+        vTaskDelay(pdMS_TO_TICKS(500));
     }
 }
 
@@ -768,11 +802,19 @@ void app_main(void)
 
     ntp_sync();
 
+    ble_queue = xQueueCreate(QUEUE_SIZE, sizeof(ble_packet_raw_t));
+    if (ble_queue == NULL)
+    {
+        ESP_LOGE(TAG, "Cannot start BLE Queue");
+    }
+
     esp_nimble_hci_init();
     nimble_port_init();
+    ble_gattc_init();
 
     ble_hs_cfg.sync_cb = ble_app_scan;
+    nimble_port_freertos_init(ble_host_task);
 
-    xTaskCreatePinnedToCore(ota_task, "OTA", 4096, NULL, 7, &ota_handle, tskNO_AFFINITY);
-
+    xTaskCreatePinnedToCore(ble_json_task, "ble_json_task", 4096, NULL, 5, NULL, tskNO_AFFINITY);
+    xTaskCreatePinnedToCore(ota_task, "OTA", 4096, NULL, 7, NULL, tskNO_AFFINITY);
 }
