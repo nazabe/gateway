@@ -22,6 +22,7 @@
 #include "esp_netif.h"
 #include "lwip/ip4_addr.h"
 #include "esp_sntp.h"
+#include "mqtt_client.h"
 
 // NimBLE stack
 #include "esp_nimble_hci.h"
@@ -80,7 +81,7 @@ char wifi_bssid[WIFI_BSSID_MAX_LEN];
 
 uint16_t scan_interval = 100;
 uint16_t scan_window = 100;
-uint16_t scan_timeout = 5000;
+uint16_t scan_timeout = 60 * 1000;
 
 uint8_t filter_policy = 0;
 uint8_t limited = 0;
@@ -113,16 +114,17 @@ static volatile bool sntp_sync_done = false;
 
 typedef struct
 {
-    uint8_t mac[6];      // "XX:XX:XX:XX:XX:XX" + null. TODO: it can be 6 bytes
+    uint8_t mac[6];      // "XX:XX:XX:XX:XX:XX" + null.
     int8_t rssi;         // integer value, normally negative
     uint8_t raw_adv[31]; // 31 * 2 = 62 bytes → 124 chars + \0 = 125 bytes
     uint8_t raw_len;
-    uint64_t timestamp_ms; // Time (ej. ISO 8601) TODO: uint64, timestamp 32 its a lot, unt64 its enough
+    uint64_t timestamp_ms; // Time (ej. ISO 8601)
 } ble_packet_raw_t;
 
-#define QUEUE_SIZE 25
+#define DEVICES_COUNTER 80
 
 QueueHandle_t ble_queue;
+esp_mqtt_client_handle_t mqtt_client;
 
 static const char hex_chars[] = "0123456789ABCDEF";
 
@@ -134,6 +136,7 @@ uint32_t sum = 0;
 static int last_log_percent = -5;
 
 volatile bool do_ota = false;
+volatile bool mqtt_connected = false;
 
 static const char *json_str = NULL;
 static const char TAG[] = "main";
@@ -537,7 +540,7 @@ void ntp_sync(void)
     else
     {
         ESP_LOGE(TAG, "NTP: Time synchronization failed.");
-        ESP_LOGI(TAG, "NTP: Final SNTP sync status: %d (0:Reset, 1:Completed, 2:InProgress)", sntp_get_sync_status());
+        ESP_LOGI(TAG, "NTP: Final SNTP sync status: %d (0: Reset, 1: Completed, 2: InProgress)", sntp_get_sync_status());
         sntp_initialized_flag = false; // Allow reinit on next attempt
     }
 
@@ -685,15 +688,17 @@ void ble_host_task(void *param)
 
 static void ble_json_task(void *param)
 {
-    ble_packet_raw_t pkt, buffer[QUEUE_SIZE];
+    ble_packet_raw_t pkt, buffer[DEVICES_COUNTER];
     int count = 0;
+
+    // TODO: Validate devices via black & white list. Add gateway data in JSON
 
     while (1)
     {
         // Try to receive from queue with timeout
         if (xQueueReceive(ble_queue, &pkt, pdMS_TO_TICKS(CLEAN_INTERVAL_MS)) == pdTRUE)
         {
-            if (count < QUEUE_SIZE)
+            if (count < DEVICES_COUNTER)
                 buffer[count++] = pkt;
         }
         else if (count == 0)
@@ -702,7 +707,7 @@ static void ble_json_task(void *param)
             continue;
         }
 
-        if (count < QUEUE_SIZE)
+        if (count < DEVICES_COUNTER)
             continue;
 
         cJSON *root = cJSON_CreateObject(), *arr = cJSON_CreateArray();
@@ -768,6 +773,87 @@ static void ble_json_task(void *param)
     }
 }
 
+void mqtt_event_handler(void *args, esp_event_base_t base, int32_t event_id, void *event_data)
+{
+    esp_mqtt_event_handle_t event = event_data;
+
+    switch ((esp_mqtt_event_id_t)event_id)
+    {
+    case MQTT_EVENT_CONNECTED:
+        mqtt_connected = true;
+        ESP_LOGI(TAG, "MQTT connected");
+
+        if (mqtt_client) {
+            esp_mqtt_client_subscribe(mqtt_client, MQTT_SUBSCRIBE_TOPIC, 0);
+            ESP_LOGI(TAG, "Subscribed to OTA topic: %s", MQTT_SUBSCRIBE_TOPIC);
+        }
+        break;
+
+    case MQTT_EVENT_DISCONNECTED:
+        mqtt_connected = false;
+        ESP_LOGW(TAG, "MQTT disconnected");
+        break;
+
+    case MQTT_EVENT_DATA:
+        ESP_LOGI(TAG, "MQTT event data received");
+
+        char topic[128] = {0};
+        char data[128] = {0};
+
+        int topic_len = event->topic_len < sizeof(topic) - 1 ? event->topic_len : sizeof(topic) - 1;
+        int data_len = event->data_len < sizeof(data) - 1 ? event->data_len : sizeof(data) - 1;
+
+        memcpy(topic, event->topic, topic_len);
+        memcpy(data, event->data, data_len);
+
+        if (strcmp(topic, MQTT_SUBSCRIBE_TOPIC) == 0 && strcmp(data, "ota_update") == 0)
+        {
+            do_ota = true;
+            ESP_LOGI(TAG, "OTA update requested");
+        }
+        break;
+
+    default:
+        ESP_LOGD(TAG, "Unhandled MQTT event ID: %d", event_id);
+        break;
+    }
+}
+
+char mqtt_topic[64];
+
+static void mqtt_init(void)
+{
+    esp_mqtt_client_config_t cfg = {
+        .broker.address.uri = mqtt_url,
+        .broker.verification.crt_bundle_attach = esp_crt_bundle_attach,
+    };
+
+    mqtt_client = esp_mqtt_client_init(&cfg);
+    if (!mqtt_client) {
+        ESP_LOGE(TAG, "Failed to initialize MQTT client");
+        return;
+    }
+
+    if (esp_mqtt_client_register_event(mqtt_client, ESP_EVENT_ANY_ID, mqtt_event_handler, NULL) != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to register MQTT event handler");
+        return;
+    }
+
+    if (esp_mqtt_client_start(mqtt_client) != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to start MQTT client");
+        return;
+    }
+
+    // Topic de publicación, usando MAC como ID
+    uint8_t mac[6];
+    if (esp_efuse_mac_get_default(mac) == ESP_OK) {
+        snprintf(mqtt_topic, sizeof(mqtt_topic), MQTT_TOPIC_TEMPLATE,
+         mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    } else {
+        snprintf(mqtt_topic, sizeof(mqtt_topic), MQTT_RESPONSE_TOPIC);
+    }
+}
+
 void app_main(void)
 {
     init_device_mac();
@@ -802,7 +888,7 @@ void app_main(void)
 
     ntp_sync();
 
-    ble_queue = xQueueCreate(QUEUE_SIZE, sizeof(ble_packet_raw_t));
+    ble_queue = xQueueCreate(DEVICES_COUNTER, sizeof(ble_packet_raw_t));
     if (ble_queue == NULL)
     {
         ESP_LOGE(TAG, "Cannot start BLE Queue");
@@ -815,6 +901,6 @@ void app_main(void)
     ble_hs_cfg.sync_cb = ble_app_scan;
     nimble_port_freertos_init(ble_host_task);
 
-    xTaskCreatePinnedToCore(ble_json_task, "ble_json_task", 4096, NULL, 5, NULL, tskNO_AFFINITY);
+    xTaskCreatePinnedToCore(ble_json_task, "ble_json_task", 8192, NULL, 5, NULL, tskNO_AFFINITY);
     xTaskCreatePinnedToCore(ota_task, "OTA", 4096, NULL, 7, NULL, tskNO_AFFINITY);
 }
